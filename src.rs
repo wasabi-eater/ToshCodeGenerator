@@ -2,17 +2,23 @@ use core::ops::*;
 use core::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 
-#[derive(Clone)]
+
 pub struct Expr<'a, T>{
     statements: Vec<String>,
+    post_process: Vec<String>,
     expr: String,
     phantom: PhantomData<&'a T>
 }
-
+impl<'a, T> Expr<'a, T>{
+    fn create_tosh(self) -> String {
+        format!("{}\n{}", self.statements.join("\n"), self.post_process.join("\n"))
+    }
+}
 impl From<f64> for Expr<'static, f64> {
     fn from(n: f64) -> Self {
         Expr{
             statements: vec![],
+            post_process: vec![],
             expr: n.to_string(),
             phantom: PhantomData
         }
@@ -23,6 +29,7 @@ impl<'a> Neg for Expr<'a, f64>{
     fn neg(self) -> Self {
         Expr{
             statements: self.statements,
+            post_process: self.post_process,
             expr: format!("(-{})", self.expr),
             phantom: PhantomData
         }
@@ -30,11 +37,14 @@ impl<'a> Neg for Expr<'a, f64>{
 }
 impl<'a> Add for Expr<'a, f64> {
     type Output = Self;
-    fn add(self, mut other: Self) -> Self {
+    fn add(mut self, mut other: Self) -> Self {
         let mut statements = self.statements;
         statements.append(&mut other.statements);
+        let mut post_process = other.post_process;
+        post_process.append(&mut self.post_process);
         Expr {
             statements,
+            post_process,
             expr: format!("({} + {})", self.expr, other.expr),
             phantom: PhantomData
         }
@@ -42,11 +52,14 @@ impl<'a> Add for Expr<'a, f64> {
 }
 impl<'a> Sub for Expr<'a, f64> {
     type Output = Self;
-    fn sub(self, mut other: Self) -> Self {
+    fn sub(mut self, mut other: Self) -> Self {
         let mut statements = self.statements;
         statements.append(&mut other.statements);
+        let mut post_process = other.post_process;
+        post_process.append(&mut self.post_process);
         Expr {
             statements,
+            post_process,
             expr: format!("({} - {})", self.expr, other.expr),
             phantom: PhantomData
         }
@@ -54,11 +67,14 @@ impl<'a> Sub for Expr<'a, f64> {
 }
 impl<'a> Mul for Expr<'a, f64> {
     type Output = Self;
-    fn mul(self, mut other: Self) -> Self {
+    fn mul(mut self, mut other: Self) -> Self {
         let mut statements = self.statements;
         statements.append(&mut other.statements);
+        let mut post_process = other.post_process;
+        post_process.append(&mut self.post_process);
         Expr {
             statements,
+            post_process,
             expr: format!("({} * {})", self.expr, other.expr),
             phantom: PhantomData
         }
@@ -66,11 +82,14 @@ impl<'a> Mul for Expr<'a, f64> {
 }
 impl<'a> Div for Expr<'a, f64> {
     type Output = Self;
-    fn div(self, mut other: Self) -> Self {
+    fn div(mut self, mut other: Self) -> Self {
         let mut statements = self.statements;
         statements.append(&mut other.statements);
+        let mut post_process = other.post_process;
+        post_process.append(&mut self.post_process);
         Expr {
             statements,
+            post_process,
             expr: format!("({} / {})", self.expr, other.expr),
             phantom: PhantomData
         }
@@ -80,59 +99,50 @@ impl<'a> From<&'a str> for Expr<'static, String> {
     fn from(s: &str) -> Self {
         Expr {
             statements: vec![],
+            post_process: vec![],
             expr: "\"".to_string() + s + "\"",
             phantom: PhantomData
         }
     }
 }
 
-pub struct Statements{
+pub struct Stack{
     stack: String,
-    statements: RefCell<Vec<String>>,
     var_count: Cell<usize>
 }
-impl Statements{
-    pub fn new(stack: impl Into<String>) -> Statements {
-        Statements {stack: stack.into(), statements: RefCell::new(vec![]), var_count: Cell::new(0)}
+impl Stack{
+    pub fn new(stack: impl Into<String>) -> Self {
+        Self {stack: stack.into(), var_count: Cell::new(0)}
     }
-    pub fn create_tosh(self) -> String{
-        format!("repeat {}\ninsert \"\" at 1 of {}\nend\n", self.var_count.get(), self.stack) +
-        &self.statements.into_inner().join("\n") +
-        &format!("\nrepeat {}\ndelete 1 of {}\nend\n", self.var_count.get(), self.stack)
-    }
-    pub fn var<'a, T>(&'a self, expr: Expr<'a, T>) -> Variable<'a, T> {
+    pub fn var<'a, T>(&'a self, expr: Expr<'a, T>, f: impl for<'b> FnOnce(Variable<'b, T>) -> Expr<'b, T>) -> Expr<'a, T> {
         self.var_count.set(self.var_count.get() + 1);
         let number = self.var_count.get();
-        self.statements.borrow_mut().push(format!("replace item {} of {} with {}", number, self.stack, expr.expr));
-        Variable{statements: &self, phantom: PhantomData, number}
+        let mut r = f(Variable{stack: &self, phantom: PhantomData, number});
+        self.var_count.set(self.var_count.get() - 1);
+        r.statements.insert(0, format!("insert {} at 0 of {}", expr.expr, self.stack));
+        r.post_process.push(format!("delete at 0 of {}", self.stack));
+        r
     }
 }
 
 pub struct Variable<'a, T>{
-    statements: &'a Statements,
-    phantom: PhantomData<T>,
+    stack: &'a Stack,
+    phantom: PhantomData<&'a T>,
     number: usize
 }
 impl<'a, T> Variable<'a, T> {
-    pub fn get(&'a self) -> Expr<'a, T>{
+    pub fn get(&self) -> Expr<'a, T>{
         Expr{
             statements: vec![],
-            expr: format!("(item {} of {})", self.number, self.statements.stack),
+            post_process: vec![],
+            expr: format!("(item {} of {})", self.stack.var_count.get() - self.number, self.stack.stack),
             phantom: PhantomData
         }
-    }
-    pub fn set(&'a self, mut expr: Expr<'a, T>) {
-        let mut statements = self.statements.statements.borrow_mut();
-        statements.append(&mut expr.statements);
-        statements.push(format!("replace item {} of {} with {}", self.number, self.statements.stack, expr.expr));
     }
 }
 
 fn main(){
-    let statements = Statements::new("stack");
-    let v1 = statements.var(Expr::from(1.5));
-    v1.set(v1.get() + Expr::from(2.1));
-    let v2 = statements.var(Expr::from("abc"));
-    v2.set(Expr::from("def"));
-    print!("{}", statements.create_tosh());
+    let stack = Stack::new("stack");
+    let expr = stack.var(Expr::from(0.4) + Expr::from(3.2), |v| v.get() * Expr::from(2.3));
+    print!("{}", expr.create_tosh());
 }

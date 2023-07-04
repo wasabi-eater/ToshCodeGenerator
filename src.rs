@@ -71,7 +71,7 @@ impl<'a> Div for Expr<'a, f64> {
         statements.append(&mut other.statements);
         Expr {
             statements,
-            expr: format!("({} * {})", self.expr, other.expr),
+            expr: format!("({} / {})", self.expr, other.expr),
             phantom: PhantomData
         }
     }

@@ -125,7 +125,12 @@ impl Stack{
         let mut statements = expr.statements;
         statements.push(format!("insert {} at 1 of {}", expr.expr, self.stack));
         for StackDelete{stack} in expr.post_process {
-            statements.push(format!("delete at 2 of {}", stack));
+            if stack == self.stack {
+                statements.push(format!("delete at 2 of {}", stack));
+            }
+            else {
+                statements.push(format!("delete at 1 of {}", stack));
+            }
         }
         statements.append(&mut r.statements);
         r.post_process.push(StackDelete{stack: self.stack.clone()});

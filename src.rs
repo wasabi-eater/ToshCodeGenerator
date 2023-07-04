@@ -114,13 +114,13 @@ impl Stack{
     pub fn new(stack: impl Into<String>) -> Self {
         Self {stack: stack.into(), var_count: Cell::new(0)}
     }
-    pub fn var<'a, T>(&'a self, expr: Expr<'a, T>, f: impl for<'b> FnOnce(Variable<'b, T>) -> Expr<'b, T>) -> Expr<'a, T> {
+    pub fn var<'a, 'b, T: 'b>(&'b self, expr: Expr<'a, T>, f: impl FnOnce(Variable<'b, T>) -> Expr<'a, T>) -> Expr<'a, T> {
         self.var_count.set(self.var_count.get() + 1);
         let number = self.var_count.get();
         let mut r = f(Variable{stack: &self, phantom: PhantomData, number});
         self.var_count.set(self.var_count.get() - 1);
-        r.statements.insert(0, format!("insert {} at 0 of {}", expr.expr, self.stack));
-        r.post_process.push(format!("delete at 0 of {}", self.stack));
+        r.statements.insert(0, format!("insert {} at 1 of {}", expr.expr, self.stack));
+        r.post_process.push(format!("delete at 1 of {}", self.stack));
         r
     }
 }
@@ -135,14 +135,27 @@ impl<'a, T> Variable<'a, T> {
         Expr{
             statements: vec![],
             post_process: vec![],
-            expr: format!("(item {} of {})", self.stack.var_count.get() - self.number, self.stack.stack),
+            expr: format!("(item {} of {})", self.stack.var_count.get() - self.number + 1, self.stack.stack),
             phantom: PhantomData
         }
     }
 }
 
+macro_rules! action {
+    {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
+        $stack.var($e, |$v| action!{$stack; $(let! $v2 = $e2;)* $e3})
+    };
+    {$stack:expr; $e:expr} => ($e);
+}
+
 fn main(){
     let stack = Stack::new("stack");
-    let expr = stack.var(Expr::from(0.4) + Expr::from(3.2), |v| v.get() * Expr::from(2.3));
-    print!("{}", expr.create_tosh());
+    let expr = action!{
+        stack;
+        let! x = Expr::from(0.4) + Expr::from(3.2);
+        let! y = x.get() + Expr::from(3.0);
+        let! z = x.get() * y.get();
+        z.get()
+    };
+    println!("{}", expr.create_tosh());
 }

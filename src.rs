@@ -2,16 +2,19 @@ use core::ops::*;
 use core::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 
-
+struct StackDelete{
+    stack: String
+}
 pub struct Expr<'a, T>{
     statements: Vec<String>,
-    post_process: Vec<String>,
+    post_process: Vec<StackDelete>,
     expr: String,
     phantom: PhantomData<&'a T>
 }
 impl<'a, T> Expr<'a, T>{
     fn create_tosh(self) -> String {
-        format!("{}\n{}", self.statements.join("\n"), self.post_process.join("\n"))
+        format!("{}\n{}", self.statements.join("\n"),
+            self.post_process.into_iter().map(|s| format!("delete at 1 of {}", s.stack)).collect::<Vec<_>>().join("\n"))
     }
 }
 impl From<f64> for Expr<'static, f64> {
@@ -119,9 +122,19 @@ impl Stack{
         let number = self.var_count.get();
         let mut r = f(Variable{stack: &self, phantom: PhantomData, number});
         self.var_count.set(self.var_count.get() - 1);
-        r.statements.insert(0, format!("insert {} at 1 of {}", expr.expr, self.stack));
-        r.post_process.push(format!("delete at 1 of {}", self.stack));
-        r
+        let mut statements = expr.statements;
+        statements.push(format!("insert {} at 1 of {}", expr.expr, self.stack));
+        for StackDelete{stack} in expr.post_process {
+            statements.push(format!("delete at 2 of {}", stack));
+        }
+        statements.append(&mut r.statements);
+        r.post_process.push(StackDelete{stack: self.stack.clone()});
+        Expr {
+            statements,
+            post_process: r.post_process,
+            expr: r.expr,
+            phantom: PhantomData
+        }
     }
 }
 
@@ -152,9 +165,12 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! x = Expr::from(0.4) + Expr::from(3.2);
-        let! y = x.get() + Expr::from(3.0);
-        let! z = x.get() * y.get();
+        let! z = action!{
+            stack;
+            let! x = Expr::from(0.4) + Expr::from(3.2);
+            let! y = x.get() + Expr::from(3.0);
+            x.get() * y.get()
+        };
         z.get()
     };
     println!("{}", expr.create_tosh());

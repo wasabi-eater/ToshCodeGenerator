@@ -37,7 +37,7 @@ pub struct Expr<'a, T : FieldSized>{
 impl<'a, T : FieldSized> Expr<'a, T>{
     fn create_tosh(self) -> String {
         format!("{}\n{}", self.statements.join("\n"),
-            self.post_process.into_iter().map(|s| format!("delete at 1 of {}", s.stack)).collect::<Vec<_>>().join("\n"))
+            self.post_process.into_iter().map(|s| format!("delete 1 of {}", s.stack)).collect::<Vec<_>>().join("\n"))
     }
     pub fn var<'b, 'c, T2 : FieldSized>(self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
         where T: 'c {
@@ -47,15 +47,24 @@ impl<'a, T : FieldSized> Expr<'a, T>{
         let mut r = f(Variable{stack: &stack, phantom: PhantomData, number});
         stack.var_count.set(stack.var_count.get() - 1);
         let mut statements = self.statements;
-        for expr in self.expr {
-            statements.push(format!("insert {} at 1 of {}", expr, stack.stack));
+        if self.expr.len() == 1 {
+            statements.push(format!("insert {} at 1 of {}", self.expr[0], stack.stack));
+        }
+        else {
+            for expr in self.expr.into_iter().rev() {
+                statements.push(format!("add {} to {}", expr, stack.stack));
+            }
+            for _ in 0..expr_count {
+                statements.push(format!("insert (item (length of {0}) of {0}) at 1 of {0}", stack.stack));
+                statements.push(format!("delete (length of {0}) of {0}", stack.stack));
+            }
         }
         for StackDelete{stack: _stack} in self.post_process {
             if _stack == stack.stack {
-                statements.push(format!("delete at {} of {}", expr_count + 1, _stack));
+                statements.push(format!("delete {} of {}", expr_count + 1, _stack));
             }
             else {
-                statements.push(format!("delete at 1 of {}", _stack));
+                statements.push(format!("delete 1 of {}", _stack));
             }
         }
         statements.append(&mut r.statements);
@@ -91,6 +100,26 @@ impl <'a, T1: Into<Expr<'a, A>>, T2: Into<Expr<'a, B>>, A: FieldSized, B: FieldS
             statements,
             post_process,
             expr,
+            phantom: PhantomData
+        }
+    }
+}
+impl <'a, T1: FieldSized, T2: FieldSized> Expr<'a, (T1, T2)> {
+    pub fn item0(mut self) -> Expr<'a, T1> {
+        let _ = self.expr.split_off(T1::size());
+        Expr{
+            statements: self.statements,
+            expr: self.expr,
+            post_process: self.post_process,
+            phantom: PhantomData
+        }
+    }
+    pub fn item1(mut self) -> Expr<'a, T2> {
+        let t2_expr = self.expr.split_off(T1::size());
+        Expr{
+            statements: self.statements,
+            expr: t2_expr,
+            post_process: self.post_process,
             phantom: PhantomData
         }
     }
@@ -232,8 +261,9 @@ fn main(){
             let! y = x.get() + Expr::from(3.0);
             x.get() * y.get()
         };
-        let! w = Expr::from((z.get(), 3.2));
-        w.get()
+        let! w = Expr::from(((z.get(), "Hello World"), 3.2));
+        let! w2 = w.get().item0();
+        Expr::from(())
     };
     println!("{}", expr.create_tosh());
 }

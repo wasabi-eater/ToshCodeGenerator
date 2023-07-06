@@ -1,7 +1,50 @@
+use std::rc::Rc;
 use core::ops::*;
 use core::cell::Cell;
 use std::marker::PhantomData;
-
+enum ExprTree{
+    Num(String),
+    Str(String),
+    BinOp{
+        left: Box<ExprTree>,
+        right: Box<ExprTree>,
+        op: &'static str
+    },
+    DataItemOf{
+        index: Box<ExprTree>,
+        list: Rc<str>
+    },
+    DataAdd{
+        item: Box<ExprTree>,
+        list: Rc<str>
+    },
+    DataInsert{
+        item: Box<ExprTree>,
+        index: Box<ExprTree>,
+        list: Rc<str>
+    },
+    DataDelete{
+        index: Box<ExprTree>,
+        list: Rc<str>
+    },
+    DataLengthOf{
+        list: Rc<str>
+    }
+}
+impl ExprTree{
+    pub fn as_tosh_code(self) -> String{
+        match self {
+            ExprTree::Num(n) => n,
+            ExprTree::Str(s) => format!("\"{}\"", s),
+            ExprTree::BinOp{left, op, right} => format!("({} {} {})", left.as_tosh_code(), op, right.as_tosh_code()),
+            ExprTree::DataItemOf{index, list} => format!("(item {} of {})", index.as_tosh_code(), list),
+            ExprTree::DataAdd{item, list} => format!("add {} to {}", item.as_tosh_code(), list),
+            ExprTree::DataInsert{item, index, list} => format!("insert {} at {} of {}", item.as_tosh_code(), index.as_tosh_code(), list),
+            ExprTree::DataDelete{index, list} => format!("delete {} of {}", index.as_tosh_code(), list),
+            ExprTree::DataLengthOf{list} => format!("(length of {})", list)
+        }
+    }
+}
 pub trait FieldSized {
     fn size() -> usize;
 }
@@ -26,20 +69,23 @@ impl<T1: FieldSized, T2: FieldSized> FieldSized for (T1, T2) {
     }
 }
 struct StackDelete{
-    stack: String
+    stack: Rc<str>
 }
 pub struct Expr<'a, T : FieldSized>{
-    statements: Vec<String>,
+    statements: Vec<ExprTree>,
     post_process: Vec<StackDelete>,
-    expr: Vec<String>,
+    expr: Vec<ExprTree>,
     phantom: PhantomData<&'a T>
 }
 impl<'a, T : FieldSized> Expr<'a, T>{
     fn create_tosh(self) -> String {
-        format!("{}\n{}", self.statements.join("\n"),
-            self.post_process.into_iter().map(|s| format!("delete 1 of {}", s.stack)).collect::<Vec<_>>().join("\n"))
+        format!("{}\n{}", self.statements.into_iter().map(|s| s.as_tosh_code()).collect::<Vec<_>>().join("\n"),
+            self.post_process.into_iter().map(|s| ExprTree::DataDelete{
+                index: ExprTree::Num("1".into()).into(),
+                list: s.stack
+            }.as_tosh_code()).collect::<Vec<_>>().join("\n"))
     }
-    pub fn var<'b, 'c, T2 : FieldSized>(self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
+    pub fn var<'b, 'c, T2 : FieldSized>(mut self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
         where T: 'c {
         let expr_count = self.expr.len();
         let number = (stack.var_count.get() + 1 .. stack.var_count.get() + expr_count + 1).collect();
@@ -48,27 +94,46 @@ impl<'a, T : FieldSized> Expr<'a, T>{
         stack.var_count.set(stack.var_count.get() - 1);
         let mut statements = self.statements;
         if self.expr.len() == 1 {
-            statements.push(format!("insert {} at 1 of {}", self.expr[0], stack.stack));
+            statements.push(ExprTree::DataInsert{
+                item: self.expr.pop().unwrap().into(),
+                index: ExprTree::Num("0".into()).into(),
+                list: stack.name.clone()});
         }
         else {
             for expr in self.expr.into_iter().rev() {
-                statements.push(format!("add {} to {}", expr, stack.stack));
+                statements.push(ExprTree::DataAdd{item: expr.into(), list: stack.name.clone()});
             }
             for _ in 0..expr_count {
-                statements.push(format!("insert (item (length of {0}) of {0}) at 1 of {0}", stack.stack));
-                statements.push(format!("delete (length of {0}) of {0}", stack.stack));
+                statements.push(ExprTree::DataInsert{
+                    item: ExprTree::DataItemOf{
+                        index: ExprTree::DataLengthOf{list: stack.name.clone()}.into(),
+                        list: stack.name.clone(),
+                    }.into(),
+                    index: ExprTree::Num("1".into()).into(),
+                    list: stack.name.clone()
+                });
+                statements.push(ExprTree::DataDelete{
+                    index: ExprTree::DataLengthOf{list: stack.name.clone()}.into(),
+                    list: stack.name.clone()
+                });
             }
         }
         for StackDelete{stack: _stack} in self.post_process {
-            if _stack == stack.stack {
-                statements.push(format!("delete {} of {}", expr_count + 1, _stack));
+            if _stack == stack.name {
+                statements.push(ExprTree::DataDelete{
+                    index: ExprTree::Num((expr_count + 1).to_string()).into(),
+                    list: _stack
+                });
             }
             else {
-                statements.push(format!("delete 1 of {}", _stack));
+                statements.push(ExprTree::DataDelete{
+                    index: ExprTree::Num("1".into()).into(),
+                    list: _stack
+                });
             }
         }
         statements.append(&mut r.statements);
-        r.post_process.push(StackDelete{stack: stack.stack.clone()});
+        r.post_process.push(StackDelete{stack: stack.name.clone()});
         Expr {
             statements,
             post_process: r.post_process,
@@ -129,18 +194,22 @@ impl<'a> From<f64> for Expr<'a, f64> {
         Expr{
             statements: vec![],
             post_process: vec![],
-            expr: vec![n.to_string()],
+            expr: vec![ExprTree::Num(n.to_string())],
             phantom: PhantomData
         }
     }
 }
 impl<'a> Neg for Expr<'a, f64>{
     type Output = Self;
-    fn neg(self) -> Self {
+    fn neg(mut self) -> Self {
         Expr{
             statements: self.statements,
             post_process: self.post_process,
-            expr: vec![format!("(-{})", self.expr[0])],
+            expr: vec![ExprTree::BinOp{
+                left: ExprTree::Num("0".into()).into(),
+                op: "-",
+                right: self.expr.pop().unwrap().into()
+            }],
             phantom: PhantomData
         }
     }
@@ -155,7 +224,11 @@ impl<'a> Add for Expr<'a, f64> {
         Expr {
             statements,
             post_process,
-            expr: vec![format!("({} + {})", self.expr[0], other.expr[0])],
+            expr: vec![ExprTree::BinOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "+",
+                right: other.expr.pop().unwrap().into()
+            }],
             phantom: PhantomData
         }
     }
@@ -170,7 +243,11 @@ impl<'a> Sub for Expr<'a, f64> {
         Expr {
             statements,
             post_process,
-            expr: vec![format!("({} - {})", self.expr[0], other.expr[0])],
+            expr: vec![ExprTree::BinOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "-",
+                right: other.expr.pop().unwrap().into()
+            }],
             phantom: PhantomData
         }
     }
@@ -185,7 +262,11 @@ impl<'a> Mul for Expr<'a, f64> {
         Expr {
             statements,
             post_process,
-            expr: vec![format!("({} * {})", self.expr[0], other.expr[0])],
+            expr: vec![ExprTree::BinOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "*",
+                right: other.expr.pop().unwrap().into()
+            }],
             phantom: PhantomData
         }
     }
@@ -200,7 +281,11 @@ impl<'a> Div for Expr<'a, f64> {
         Expr {
             statements,
             post_process,
-            expr: vec![format!("({} / {})", self.expr[0], other.expr[0])],
+            expr: vec![ExprTree::BinOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "/",
+                right: other.expr.pop().unwrap().into()
+            }],
             phantom: PhantomData
         }
     }
@@ -210,19 +295,19 @@ impl<'a, 'b> From<&'a str> for Expr<'b, String> {
         Expr {
             statements: vec![],
             post_process: vec![],
-            expr: vec!["\"".to_string() + s + "\""],
+            expr: vec![ExprTree::Str(s.into())],
             phantom: PhantomData
         }
     }
 }
 
 pub struct Stack{
-    stack: String,
+    name: Rc<str>,
     var_count: Cell<usize>
 }
 impl Stack{
-    pub fn new(stack: impl Into<String>) -> Self {
-        Self {stack: stack.into(), var_count: Cell::new(0)}
+    pub fn new(name: &str) -> Self {
+        Self {name: name.into(), var_count: Cell::new(0)}
     }
 }
 
@@ -237,7 +322,10 @@ impl<'a, T : FieldSized> Variable<'a, T> {
             statements: vec![],
             post_process: vec![],
             expr: self.number.iter()
-                .map(|number| format!("(item {} of {})", self.stack.var_count.get() - number + 1, self.stack.stack))
+                .map(|number| ExprTree::DataItemOf{
+                    index: ExprTree::Num((self.stack.var_count.get() - number + 1).to_string()).into(),
+                    list: self.stack.name.clone()
+                })
                 .collect(),
             phantom: PhantomData
         }

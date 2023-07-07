@@ -2,7 +2,6 @@ use std::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 use core::ops::*;
-use core::cell::Cell;
 use std::marker::PhantomData;
 #[derive(Clone)]
 struct VarID{
@@ -55,7 +54,7 @@ impl ExprTree{
     fn create_tosh(statements: impl Iterator<Item = ExprTree>, stacks: &mut HashMap<Rc<str>, Vec<VarID>>) -> String{
         let mut code: Vec<String> = vec![];
         for expr in statements{
-            let str = match expr {
+            code.push(match expr {
                 ExprTree::Num(n) => n,
                 ExprTree::Str(s) => format!("\"{}\"", s),
                 ExprTree::BinOp{left, op, right} => format!("({} {} {})",
@@ -93,8 +92,7 @@ impl ExprTree{
                         stack_name
                     )
                 }
-            };
-            code.push(str)
+            });
         }
         code.join("\n")
     }
@@ -123,31 +121,21 @@ impl<T1: FieldSized, T2: FieldSized> FieldSized for (T1, T2) {
     }
 }
 #[derive(Debug)]
-struct StackDelete{
-    stack: Rc<str>,
-    var_id: VarID
-}
-#[derive(Debug)]
 pub struct Expr<'a, T : FieldSized>{
     statements: Vec<ExprTree>,
-    post_process: Vec<StackDelete>,
+    post_process: Vec<ExprTree>,
     expr: Vec<ExprTree>,
     phantom: PhantomData<&'a T>
 }
 impl<'a, T : FieldSized> Expr<'a, T>{
     fn create_tosh(self) -> String {
-        ExprTree::as_tosh_code(self.statements.into_iter().chain(
-            self.post_process.into_iter().map(|s| ExprTree::StackDelete{
-                var_id: s.var_id,
-                stack: s.stack
-            })))
+        ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
     }
-    pub fn var<'b, 'c, T2 : FieldSized>(self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
+    pub fn var<'b, 'c, T2 : FieldSized>(mut self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
         where T: 'c {
         let expr_count = self.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
-        let mut r = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
-        
+        let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
         let mut statements = self.statements;
         for (expr, var_id) in self.expr.into_iter().zip(var_id.clone()) {
             statements.push(ExprTree::StackPush{
@@ -156,20 +144,15 @@ impl<'a, T : FieldSized> Expr<'a, T>{
                 expr: expr.into()
             });
         }
-        for StackDelete{stack, var_id} in self.post_process {
-            statements.push(ExprTree::StackDelete{
-                var_id,
-                stack
-            });
-        }
-        statements.append(&mut r.statements);
+        statements.append(&mut self.post_process);
+        statements.append(&mut ret.statements);
         for var_id in var_id {
-            r.post_process.push(StackDelete{stack: stack.name.clone(), var_id});
+            ret.post_process.push(ExprTree::StackDelete{stack: stack.name.clone(), var_id});
         }
         Expr {
             statements,
-            post_process: r.post_process,
-            expr: r.expr,
+            post_process: ret.post_process,
+            expr: ret.expr,
             phantom: PhantomData
         }
     }
@@ -246,80 +229,46 @@ impl<'a> Neg for Expr<'a, f64>{
         }
     }
 }
+fn make_bin_op<'a>(mut left: Expr<'a, f64>, op: &'static str, mut right: Expr<'a, f64>) -> Expr<'a, f64>{
+    let mut statements = left.statements;
+    statements.append(&mut right.statements);
+    let mut post_process = left.post_process;
+    post_process.append(&mut right.post_process);
+    Expr {
+        statements,
+        post_process,
+        phantom: PhantomData,
+        expr: vec![
+            ExprTree::BinOp {
+                left: left.expr.pop().unwrap().into(),
+                op,
+                right: right.expr.pop().unwrap().into()
+            }
+        ]
+    }
+}
 impl<'a> Add for Expr<'a, f64> {
     type Output = Self;
-    fn add(mut self, mut other: Self) -> Self {
-        let mut statements = self.statements;
-        statements.append(&mut other.statements);
-        let mut post_process = other.post_process;
-        post_process.append(&mut self.post_process);
-        Expr {
-            statements,
-            post_process,
-            expr: vec![ExprTree::BinOp{
-                left: self.expr.pop().unwrap().into(),
-                op: "+",
-                right: other.expr.pop().unwrap().into()
-            }],
-            phantom: PhantomData
-        }
+    fn add(self, other: Self) -> Self {
+        make_bin_op(self, "+", other)
     }
 }
 impl<'a> Sub for Expr<'a, f64> {
     type Output = Self;
-    fn sub(mut self, mut other: Self) -> Self {
-        let mut statements = self.statements;
-        statements.append(&mut other.statements);
-        let mut post_process = other.post_process;
-        post_process.append(&mut self.post_process);
-        Expr {
-            statements,
-            post_process,
-            expr: vec![ExprTree::BinOp{
-                left: self.expr.pop().unwrap().into(),
-                op: "-",
-                right: other.expr.pop().unwrap().into()
-            }],
-            phantom: PhantomData
-        }
+    fn sub(self, other: Self) -> Self {
+        make_bin_op(self, "-", other)
     }
 }
 impl<'a> Mul for Expr<'a, f64> {
     type Output = Self;
-    fn mul(mut self, mut other: Self) -> Self {
-        let mut statements = self.statements;
-        statements.append(&mut other.statements);
-        let mut post_process = other.post_process;
-        post_process.append(&mut self.post_process);
-        Expr {
-            statements,
-            post_process,
-            expr: vec![ExprTree::BinOp{
-                left: self.expr.pop().unwrap().into(),
-                op: "*",
-                right: other.expr.pop().unwrap().into()
-            }],
-            phantom: PhantomData
-        }
+    fn mul(self, other: Self) -> Self {
+        make_bin_op(self, "*", other)
     }
 }
 impl<'a> Div for Expr<'a, f64> {
     type Output = Self;
-    fn div(mut self, mut other: Self) -> Self {
-        let mut statements = self.statements;
-        statements.append(&mut other.statements);
-        let mut post_process = other.post_process;
-        post_process.append(&mut self.post_process);
-        Expr {
-            statements,
-            post_process,
-            expr: vec![ExprTree::BinOp{
-                left: self.expr.pop().unwrap().into(),
-                op: "/",
-                right: other.expr.pop().unwrap().into()
-            }],
-            phantom: PhantomData
-        }
+    fn div(self, other: Self) -> Self {
+        make_bin_op(self, "/", other)
     }
 }
 impl<'a, 'b> From<&'a str> for Expr<'b, String> {

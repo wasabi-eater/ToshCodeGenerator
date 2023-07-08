@@ -26,7 +26,7 @@ impl fmt::Debug for VarID{
 }
 #[derive(Debug)]
 enum ExprTree{
-    Num(String),
+    Num(f64),
     Str(String),
     BinOp{
         left: Box<ExprTree>,
@@ -45,6 +45,11 @@ enum ExprTree{
     StackDelete{
         var_id: VarID,
         stack: Rc<str>
+    },
+    If{
+        cond: Box<ExprTree>,
+        then: Vec<ExprTree>,
+        else_: Vec<ExprTree>
     }
 }
 impl ExprTree{
@@ -55,7 +60,7 @@ impl ExprTree{
         let mut code: Vec<String> = vec![];
         for expr in statements{
             code.push(match expr {
-                ExprTree::Num(n) => n,
+                ExprTree::Num(n) => n.to_string(),
                 ExprTree::Str(s) => format!("\"{}\"", s),
                 ExprTree::BinOp{left, op, right} => format!("({} {} {})",
                     Self::create_tosh(vec![*left].into_iter(), stacks),
@@ -91,6 +96,15 @@ impl ExprTree{
                         stack.len() - pos + 1,
                         stack_name
                     )
+                },
+                ExprTree::If{cond, then, else_} => {
+                    let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
+                    let mut else_stacks = stacks.clone();
+                    format!("if <{} = 1> then\n{}\nelse\n{}\nend",
+                        cond,
+                        Self::create_tosh(then.into_iter(), stacks),
+                        Self::create_tosh(else_.into_iter(), &mut else_stacks)
+                    )
                 }
             });
         }
@@ -112,6 +126,11 @@ impl FieldSized for f64 {
 }
 impl FieldSized for String {
     fn size() -> usize {
+        1
+    }
+}
+impl FieldSized for bool {
+    fn size() -> usize{
         1
     }
 }
@@ -209,7 +228,7 @@ impl<'a> From<f64> for Expr<'a, f64> {
         Expr{
             statements: vec![],
             post_process: vec![],
-            expr: vec![ExprTree::Num(n.to_string())],
+            expr: vec![ExprTree::Num(n)],
             phantom: PhantomData
         }
     }
@@ -221,7 +240,7 @@ impl<'a> Neg for Expr<'a, f64>{
             statements: self.statements,
             post_process: self.post_process,
             expr: vec![ExprTree::BinOp{
-                left: ExprTree::Num("0".into()).into(),
+                left: ExprTree::Num(0.0).into(),
                 op: "-",
                 right: self.expr.pop().unwrap().into()
             }],
@@ -281,6 +300,16 @@ impl<'a, 'b> From<&'a str> for Expr<'b, String> {
         }
     }
 }
+impl <'a> From<bool> for Expr<'a, bool> {
+    fn from(b: bool) -> Self {
+        Expr {
+            statements: vec![],
+            post_process: vec![],
+            expr: vec![ExprTree::Num(if b {1.0} else {0.0})],
+            phantom: PhantomData
+        }
+    }
+}
 
 pub struct Stack{
     name: Rc<str>
@@ -311,6 +340,61 @@ impl<'a, T : FieldSized> Variable<'a, T> {
         }
     }
 }
+pub struct If<'a, T: FieldSized>{
+    cond: Expr<'a, bool>,
+    then: Expr<'a, T>,
+    else_: Expr<'a, T>
+}
+impl<'a, T: FieldSized> Expr<'a, T> {
+    pub fn if_(cond: Expr<'a, bool>, then: Expr<'a, T>, else_: Expr<'a, T>) -> If<'a, T> {
+        If {cond, then, else_}
+    }
+}
+impl<'a, T: FieldSized> If<'a, T> {
+    pub fn var<'b, 'c, T2 : FieldSized>(mut self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
+        where T: 'c {
+        let expr_count = T::size();
+        let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
+        let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
+        let mut then = self.then.statements;
+        let mut else_ = self.else_.statements;
+        for (expr, var_id) in self.then.expr.into_iter().zip(var_id.clone()) {
+            then.push(ExprTree::StackPush{
+                var_id,
+                stack: stack.name.clone(),
+                expr: expr.into()
+            });
+        }
+        for (expr, var_id) in self.else_.expr.into_iter().zip(var_id.clone()) {
+            else_.push(ExprTree::StackPush{
+                var_id,
+                stack: stack.name.clone(),
+                expr: expr.into()
+            });
+        }
+        then.append(&mut self.then.post_process);
+        else_.append(&mut self.else_.post_process);
+        let mut statements = self.cond.statements;
+        statements.push(ExprTree::If{
+           cond: self.cond.expr.pop().unwrap().into(),
+           then,
+           else_
+        });
+        statements.append(&mut ret.statements);
+        let mut post_process = self.cond.post_process;
+        post_process.append(&mut ret.post_process);
+        for var_id in var_id {
+            post_process.push(ExprTree::StackDelete{stack: stack.name.clone(), var_id});
+        }
+        
+        Expr {
+            statements,
+            post_process,
+            expr: ret.expr,
+            phantom: PhantomData
+        }
+    }
+}
 
 macro_rules! action {
     {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
@@ -323,14 +407,19 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! x = Expr::from(0.0);
-        let! y = action!{
+        let! x = Expr::from(-3.2);
+        let! y = Expr::if_(Expr::from(true), action!{
             stack;
-            let! z = x.get() + Expr::from(3.2);
-            let! w = z.get() * Expr::from(2.0);
-            Expr::from((w.get(), "Hey"))
-        };
-        let! _ = Expr::from((y.get(), "Yeah!"));
+            let! z = Expr::from(("A", "B"));
+            let! w = x.get() * Expr::from(3.2);
+            x.get() + w.get()
+        },  action!{
+            stack;
+            let! z = Expr::from(("C", "D"));
+            let! w = x.get() / Expr::from(2.5);
+            x.get() * w.get()
+        });
+        let! _ = y.get() + Expr::from(3.2);
         Expr::from(())
     };
     println!("{:?}", expr);

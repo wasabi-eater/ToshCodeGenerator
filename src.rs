@@ -55,6 +55,15 @@ enum ExprTree{
         cond: Box<ExprTree>,
         then: Vec<ExprTree>,
         else_: Vec<ExprTree>
+    },
+    While{
+        cond: Box<ExprTree>,
+        body: Vec<ExprTree>
+    },
+    StackVarRewrite{
+        var_id: VarID,
+        stack: Rc<str>,
+        expr: Box<ExprTree>
     }
 }
 impl ExprTree{
@@ -80,6 +89,14 @@ impl ExprTree{
                     format!("(item {} of {})",
                         stack.len() - stack.iter().position(|id| *id == var_id).unwrap(),
                         stack_name
+                    )
+                },
+                ExprTree::StackVarRewrite{var_id, stack: stack_name, expr} => {
+                    let stack = stacks.get(&stack_name).unwrap();
+                    format!("replace item {} of {} with {}",
+                        stack.len() - stack.iter().position(|id| *id == var_id).unwrap(),
+                        stack_name,
+                        Self::create_tosh(vec![*expr].into_iter(), stacks)
                     )
                 },
                 ExprTree::StackPush{var_id, stack: stack_name, expr} => {
@@ -114,6 +131,11 @@ impl ExprTree{
                         Self::create_tosh(then.into_iter(), stacks),
                         Self::create_tosh(else_.into_iter(), &mut else_stacks)
                     )
+                },
+                ExprTree::While{cond, body} => {
+                    let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
+                    let body = Self::create_tosh(body.into_iter(), stacks);
+                    format!("repeat until <{} = \"false\">\n{}\nend", cond, body)
                 }
             });
         }
@@ -159,18 +181,17 @@ impl<T: FieldSized, E: FieldSized> FieldSized for Result<T, E> {
     }
 }
 #[derive(Debug)]
-pub struct Expr<'a, T : FieldSized>{
+pub struct Expr<T : FieldSized>{
     statements: Vec<ExprTree>,
     post_process: Vec<ExprTree>,
     expr: Vec<ExprTree>,
-    phantom: PhantomData<&'a T>
+    phantom: PhantomData<T>
 }
-impl<'a, T : FieldSized> Expr<'a, T>{
+impl<T : FieldSized> Expr<T>{
     fn create_tosh(self) -> String {
         ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
     }
-    pub fn var<'b, 'c, T2 : FieldSized>(mut self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
-        where T: 'c {
+    pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = self.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
         let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
@@ -195,7 +216,7 @@ impl<'a, T : FieldSized> Expr<'a, T>{
         }
     }
 }
-impl<'a> From<()> for Expr<'a, ()> {
+impl From<()> for Expr<()> {
     fn from(_: ()) -> Self {
         Expr {
             statements: vec![],
@@ -205,7 +226,7 @@ impl<'a> From<()> for Expr<'a, ()> {
         }
     }
 }
-impl <'a, T1: Into<Expr<'a, A>>, T2: Into<Expr<'a, B>>, A: FieldSized, B: FieldSized> From<(T1, T2)> for Expr<'a, (A, B)> {
+impl <T1: Into<Expr<A>>, T2: Into<Expr<B>>, A: FieldSized, B: FieldSized> From<(T1, T2)> for Expr<(A, B)> {
     fn from(tuple: (T1, T2)) -> Self {
         let (mut x, mut y) = (tuple.0.into(), tuple.1.into());
         let mut statements = x.statements;
@@ -222,8 +243,8 @@ impl <'a, T1: Into<Expr<'a, A>>, T2: Into<Expr<'a, B>>, A: FieldSized, B: FieldS
         }
     }
 }
-impl <'a, T1: FieldSized, T2: FieldSized> Expr<'a, (T1, T2)> {
-    pub fn item0(mut self) -> Expr<'a, T1> {
+impl <T1: FieldSized, T2: FieldSized> Expr<(T1, T2)> {
+    pub fn item0(mut self) -> Expr<T1> {
         let _ = self.expr.split_off(T1::size());
         Expr{
             statements: self.statements,
@@ -232,7 +253,7 @@ impl <'a, T1: FieldSized, T2: FieldSized> Expr<'a, (T1, T2)> {
             phantom: PhantomData
         }
     }
-    pub fn item1(mut self) -> Expr<'a, T2> {
+    pub fn item1(mut self) -> Expr<T2> {
         let t2_expr = self.expr.split_off(T1::size());
         Expr{
             statements: self.statements,
@@ -242,7 +263,7 @@ impl <'a, T1: FieldSized, T2: FieldSized> Expr<'a, (T1, T2)> {
         }
     }
 }
-impl<'a> From<f64> for Expr<'a, f64> {
+impl From<f64> for Expr<f64> {
     fn from(n: f64) -> Self {
         Expr{
             statements: vec![],
@@ -252,7 +273,7 @@ impl<'a> From<f64> for Expr<'a, f64> {
         }
     }
 }
-impl<'a> Neg for Expr<'a, f64>{
+impl Neg for Expr<f64>{
     type Output = Self;
     fn neg(mut self) -> Self {
         Expr{
@@ -267,7 +288,7 @@ impl<'a> Neg for Expr<'a, f64>{
         }
     }
 }
-fn make_bin_op<'a>(mut left: Expr<'a, f64>, op: &'static str, mut right: Expr<'a, f64>) -> Expr<'a, f64>{
+fn make_bin_op(mut left: Expr<f64>, op: &'static str, mut right: Expr<f64>) -> Expr<f64>{
     let mut statements = left.statements;
     statements.append(&mut right.statements);
     let mut post_process = left.post_process;
@@ -285,31 +306,31 @@ fn make_bin_op<'a>(mut left: Expr<'a, f64>, op: &'static str, mut right: Expr<'a
         ]
     }
 }
-impl<'a> Add for Expr<'a, f64> {
+impl Add for Expr<f64> {
     type Output = Self;
     fn add(self, other: Self) -> Self {
         make_bin_op(self, "+", other)
     }
 }
-impl<'a> Sub for Expr<'a, f64> {
+impl Sub for Expr<f64> {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
         make_bin_op(self, "-", other)
     }
 }
-impl<'a> Mul for Expr<'a, f64> {
+impl Mul for Expr<f64> {
     type Output = Self;
     fn mul(self, other: Self) -> Self {
         make_bin_op(self, "*", other)
     }
 }
-impl<'a> Div for Expr<'a, f64> {
+impl Div for Expr<f64> {
     type Output = Self;
     fn div(self, other: Self) -> Self {
         make_bin_op(self, "/", other)
     }
 }
-impl<'a, 'b> From<&'a str> for Expr<'b, String> {
+impl<'a> From<&'a str> for Expr<String> {
     fn from(s: &str) -> Self {
         Expr {
             statements: vec![],
@@ -319,7 +340,7 @@ impl<'a, 'b> From<&'a str> for Expr<'b, String> {
         }
     }
 }
-impl <'a> From<bool> for Expr<'a, bool> {
+impl From<bool> for Expr<bool> {
     fn from(b: bool) -> Self {
         Expr {
             statements: vec![],
@@ -339,13 +360,13 @@ impl Stack{
     }
 }
 
-pub struct Variable<'a, T : FieldSized>{
+pub struct Variable<T : FieldSized>{
     stack: Rc<str>,
-    phantom: PhantomData<&'a T>,
+    phantom: PhantomData<T>,
     var_id: Vec<VarID>
 }
-impl<'a, T : FieldSized> Variable<'a, T> {
-    pub fn get(&self) -> Expr<'a, T>{
+impl<T : FieldSized> Variable<T> {
+    pub fn get(&self) -> Expr<T>{
         Expr{
             statements: vec![],
             post_process: vec![],
@@ -359,19 +380,18 @@ impl<'a, T : FieldSized> Variable<'a, T> {
         }
     }
 }
-pub struct If<'a, T: FieldSized>{
-    cond: Expr<'a, bool>,
-    then: Expr<'a, T>,
-    else_: Expr<'a, T>
+pub struct If<T: FieldSized>{
+    cond: Expr<bool>,
+    then: Expr<T>,
+    else_: Expr<T>
 }
-impl<'a, T: FieldSized> Expr<'a, T> {
-    pub fn if_(cond: Expr<'a, bool>, then: Expr<'a, T>, else_: Expr<'a, T>) -> If<'a, T> {
+impl<T: FieldSized> Expr<T> {
+    pub fn if_(cond: Expr<bool>, then: Expr<T>, else_: Expr<T>) -> If<T> {
         If {cond, then, else_}
     }
 }
-impl<'a, T: FieldSized> If<'a, T> {
-    pub fn var<'b, 'c, T2 : FieldSized>(mut self, stack: &'c Stack, f: impl FnOnce(Variable<'c, T>) -> Expr<'b, T2>) -> Expr<'b, T2>
-        where T: 'c {
+impl<T: FieldSized> If<T> {
+    pub fn var<T2 : FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = T::size();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
         let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
@@ -414,18 +434,18 @@ impl<'a, T: FieldSized> If<'a, T> {
         }
     }
 }
-pub struct TupleExpr<'a, T0: FieldSized, T1: FieldSized>{
-    tuple: Expr<'a, (T0, T1)>
+pub struct TupleExpr<T0: FieldSized, T1: FieldSized>{
+    tuple: Expr<(T0, T1)>
 }
-impl<'a, T0: FieldSized, T1: FieldSized> Expr<'a, (T0, T1)> {
-    pub fn tuple(self) -> TupleExpr<'a, T0, T1>{
+impl<T0: FieldSized, T1: FieldSized> Expr<(T0, T1)> {
+    pub fn tuple(self) -> TupleExpr<T0, T1>{
         TupleExpr{tuple: self}
     }
 }
-impl<'a, T0: FieldSized, T1: FieldSized> TupleExpr<'a, T0, T1> {
-    pub fn var<'b, 'c, T2 : FieldSized>(
+impl<T0: FieldSized, T1: FieldSized> TupleExpr<T0, T1> {
+    pub fn var<T2: FieldSized>(
         mut self, _: &Stack,
-        f: impl FnOnce((Expr<'a, T0>, Expr<'a, T1>)) -> Expr<'b, T2>) -> Expr<'b, T2> {
+        f: impl FnOnce((Expr<T0>, Expr<T1>)) -> Expr<T2>) -> Expr<T2> {
         let item1 = self.tuple.expr.split_off(T1::size());
         let item0 = self.tuple.expr;
         let mut ret = f((
@@ -452,7 +472,7 @@ impl<'a, T0: FieldSized, T1: FieldSized> TupleExpr<'a, T0, T1> {
         }
     }
 }
-impl<'a, T: Into<Expr<'a, A>>, A: FieldSized> From<Option<T>> for Expr<'a, Option<A>> {
+impl<T: Into<Expr<A>>, A: FieldSized> From<Option<T>> for Expr<Option<A>> {
     fn from(op: Option<T>) -> Self{
         match op {
             Some(t) => {
@@ -478,10 +498,10 @@ impl<'a, T: Into<Expr<'a, A>>, A: FieldSized> From<Option<T>> for Expr<'a, Optio
         }
     }
 }
-impl<'a, T: FieldSized> Expr<'a, Option<T>> {
-    pub fn match_<'b, T2: FieldSized>(mut self, some: impl FnOnce(Expr<'a, T>) -> Expr<'b, T2>, none: Expr<'b, T2>) -> If<'b, T2> {
+impl<T: FieldSized> Expr<Option<T>> {
+    pub fn match_<T2: FieldSized>(mut self, some: impl FnOnce(Expr<T>) -> Expr<T2>, none: Expr<T2>) -> If<T2> {
         let value = self.expr.split_off(1);
-        let cond: Expr<'_, bool> = Expr{
+        let cond: Expr<bool> = Expr{
             statements: self.statements,
             expr: vec![ExprTree::BinBoolOp{
                 left: self.expr.pop().unwrap().into(),
@@ -491,7 +511,7 @@ impl<'a, T: FieldSized> Expr<'a, Option<T>> {
             post_process: self.post_process,
             phantom: PhantomData
         };
-        let value: Expr<'_, T> = Expr {
+        let value: Expr<T> = Expr {
             statements: vec![],
             expr: value,
             post_process: vec![],
@@ -500,8 +520,8 @@ impl<'a, T: FieldSized> Expr<'a, Option<T>> {
         Expr::if_(cond, some(value), none)
     }
 }
-impl<'a, T: Into<Expr<'a, T2>>, E: Into<Expr<'a, E2>>, T2: FieldSized, E2: FieldSized>
-    From<Result<T, E>> for Expr<'a, Result<T2, E2>> {
+impl<T: Into<Expr<T2>>, E: Into<Expr<E2>>, T2: FieldSized, E2: FieldSized>
+    From<Result<T, E>> for Expr<Result<T2, E2>> {
     fn from(result: Result<T, E>) -> Self {
         let len = Result::<T2, E2>::size();
         match result {
@@ -528,13 +548,13 @@ impl<'a, T: Into<Expr<'a, T2>>, E: Into<Expr<'a, E2>>, T2: FieldSized, E2: Field
         }
     }
 }
-impl<'a, T: FieldSized, E: FieldSized> Expr<'a, Result<T, E>> {
-    pub fn match_<'b, T2: FieldSized>(
+impl<T: FieldSized, E: FieldSized> Expr<Result<T, E>> {
+    pub fn match_<T2: FieldSized>(
         mut self,
-        ok: impl FnOnce(Expr<'a, T>) -> Expr<'b, T2>,
-        err: impl FnOnce(Expr<'a, E>) -> Expr<'b, T2>) -> If<'b, T2> {
+        ok: impl FnOnce(Expr<T>) -> Expr<T2>,
+        err: impl FnOnce(Expr<E>) -> Expr<T2>) -> If<T2> {
         let value = self.expr.split_off(1);
-        let cond: Expr<'_, bool> = Expr{
+        let cond: Expr<bool> = Expr{
             statements: self.statements,
             expr: vec![ExprTree::BinBoolOp{
                 left: self.expr.pop().unwrap().into(),
@@ -544,13 +564,13 @@ impl<'a, T: FieldSized, E: FieldSized> Expr<'a, Result<T, E>> {
             post_process: self.post_process,
             phantom: PhantomData
         };
-        let ok_value: Expr<'_, T> = Expr {
+        let ok_value: Expr<T> = Expr {
             statements: vec![],
             expr: value.clone().into_iter().take(T::size()).collect(),
             post_process: vec![],
             phantom: PhantomData
         };
-        let err_value: Expr<'_, E> = Expr {
+        let err_value: Expr<E> = Expr {
             statements: vec![],
             expr: value.into_iter().take(E::size()).collect(),
             post_process: vec![],
@@ -559,7 +579,6 @@ impl<'a, T: FieldSized, E: FieldSized> Expr<'a, Result<T, E>> {
         Expr::if_(cond, ok(ok_value), err(err_value))
     }
 }
-
 
 macro_rules! action {
     {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
@@ -572,12 +591,12 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! x = Expr::from(Some::<f64>(3.4));
-        let! a = x.get().match_(
-            |x| x + Expr::from(3.2),
-            Expr::from(0.5)
-        );
-        let! _ = a.get() * Expr::from(3.0);
+        let! a = action!{
+            stack;
+            let! x = Expr::from(0.0);
+            x.get()
+        };
+        let! _ = a.get();
         Expr::from(())
     };
     println!("{:?}", expr);

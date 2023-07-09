@@ -165,7 +165,7 @@ impl<'a, T : FieldSized> Expr<'a, T>{
         }
         statements.append(&mut self.post_process);
         statements.append(&mut ret.statements);
-        for var_id in var_id {
+        for var_id in var_id.into_iter().rev() {
             ret.post_process.push(ExprTree::StackDelete{stack: stack.name.clone(), var_id});
         }
         Expr {
@@ -383,13 +383,51 @@ impl<'a, T: FieldSized> If<'a, T> {
         statements.append(&mut ret.statements);
         let mut post_process = self.cond.post_process;
         post_process.append(&mut ret.post_process);
-        for var_id in var_id {
+        for var_id in var_id.into_iter().rev() {
             post_process.push(ExprTree::StackDelete{stack: stack.name.clone(), var_id});
         }
         
         Expr {
             statements,
             post_process,
+            expr: ret.expr,
+            phantom: PhantomData
+        }
+    }
+}
+pub struct TupleExpr<'a, T0: FieldSized, T1: FieldSized>{
+    tuple: Expr<'a, (T0, T1)>
+}
+impl<'a, T0: FieldSized, T1: FieldSized> Expr<'a, (T0, T1)> {
+    pub fn tuple(self) -> TupleExpr<'a, T0, T1>{
+        TupleExpr{tuple: self}
+    }
+}
+impl<'a, T0: FieldSized, T1: FieldSized> TupleExpr<'a, T0, T1> {
+    pub fn var<'b, 'c, T2 : FieldSized>(
+        mut self, _: &Stack,
+        f: impl FnOnce((Expr<'a, T0>, Expr<'a, T1>)) -> Expr<'b, T2>) -> Expr<'b, T2> {
+        let item1 = self.tuple.expr.split_off(T1::size());
+        let item0 = self.tuple.expr;
+        let mut ret = f((
+            Expr{
+                statements: vec![],
+                post_process: vec![],
+                expr: item0,
+                phantom: PhantomData
+            },
+            Expr{
+                statements: vec![],
+                post_process: vec![],
+                expr: item1,
+                phantom: PhantomData
+            }));
+        let mut statements = self.tuple.statements;
+        statements.append(&mut ret.statements);
+        ret.post_process.append(&mut self.tuple.post_process);
+        Expr {
+            statements,
+            post_process: ret.post_process,
             expr: ret.expr,
             phantom: PhantomData
         }
@@ -407,19 +445,10 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! x = Expr::from(-3.2);
-        let! y = Expr::if_(Expr::from(true), action!{
-            stack;
-            let! z = Expr::from(("A", "B"));
-            let! w = x.get() * Expr::from(3.2);
-            x.get() + w.get()
-        },  action!{
-            stack;
-            let! z = Expr::from(("C", "D"));
-            let! w = x.get() / Expr::from(2.5);
-            x.get() * w.get()
-        });
-        let! _ = y.get() + Expr::from(3.2);
+        let! x = Expr::from(("A", 0.5));
+        let! (i, j) = x.get().tuple();
+        let! _ = i;
+        let! _ = j;
         Expr::from(())
     };
     println!("{:?}", expr);

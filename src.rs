@@ -579,6 +579,74 @@ impl<T: FieldSized, E: FieldSized> Expr<Result<T, E>> {
         Expr::if_(cond, ok(ok_value), err(err_value))
     }
 }
+pub struct Mut<T: FieldSized>{
+    expr: Expr<T>
+}
+impl<T: FieldSized> Expr<T>{
+    pub fn mut_(self) -> Mut<T> {
+        Mut{expr: self}
+    }
+}
+pub struct MutVariable<T : FieldSized>{
+    stack: Rc<str>,
+    phantom: PhantomData<T>,
+    var_id: Vec<VarID>
+}
+impl<T : FieldSized> MutVariable<T> {
+    pub fn get(&self) -> Expr<T>{
+        Expr{
+            statements: vec![],
+            post_process: vec![],
+            expr: self.var_id.iter().map(|var_id|
+                    ExprTree::StackVar{
+                        stack: self.stack.clone(),
+                        var_id: var_id.clone()
+                    }
+                ).collect(),
+            phantom: PhantomData
+        }
+    }
+    pub fn rewrite(&self, stack: &Stack, expr: Expr<T>) -> Expr<()> {
+        Expr{
+            statements: expr.expr.into_iter().zip(self.var_id.clone().into_iter()).map(|(expr, var_id)|
+                ExprTree::StackVarRewrite{
+                    expr: expr.into(),
+                    stack: stack.name.clone(),
+                    var_id
+                }
+            ).chain(expr.post_process.into_iter()).collect(),
+            post_process: vec![],
+            expr: vec![],
+            phantom: PhantomData
+        }
+    }
+}
+impl<T: FieldSized> Mut<T> {
+    pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(MutVariable<T>) -> Expr<T2>) -> Expr<T2> {
+        let expr_count = self.expr.expr.len();
+        let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
+        let mut ret = f(MutVariable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
+        let mut statements = self.expr.statements;
+        for (expr, var_id) in self.expr.expr.into_iter().zip(var_id.clone()) {
+            statements.push(ExprTree::StackPush{
+                var_id,
+                stack: stack.name.clone(),
+                expr: expr.into()
+            });
+        }
+        statements.append(&mut self.expr.post_process);
+        statements.append(&mut ret.statements);
+        for var_id in var_id.into_iter().rev() {
+            ret.post_process.push(ExprTree::StackDelete{stack: stack.name.clone(), var_id});
+        }
+        Expr {
+            statements,
+            post_process: ret.post_process,
+            expr: ret.expr,
+            phantom: PhantomData
+        }
+    }
+}
 
 macro_rules! action {
     {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
@@ -593,7 +661,8 @@ fn main(){
         stack;
         let! a = action!{
             stack;
-            let! x = Expr::from(0.0);
+            let! x = Expr::from(0.0).mut_();
+            let! _ = x.rewrite(&stack, 34.5.into());
             x.get()
         };
         let! _ = a.get();

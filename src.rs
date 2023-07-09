@@ -57,7 +57,9 @@ enum ExprTree{
         else_: Vec<ExprTree>
     },
     While{
-        cond: Box<ExprTree>,
+        cond_statements: Vec<ExprTree>,
+        cond_expr: Box<ExprTree>,
+        cond_post_process: Vec<ExprTree>,
         body: Vec<ExprTree>
     },
     StackVarRewrite{
@@ -132,10 +134,17 @@ impl ExprTree{
                         Self::create_tosh(else_.into_iter(), &mut else_stacks)
                     )
                 },
-                ExprTree::While{cond, body} => {
-                    let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
+                ExprTree::While{cond_statements, cond_post_process, cond_expr, body} => {
+                    let cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
+                    let cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
+                    let cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
                     let body = Self::create_tosh(body.into_iter(), stacks);
-                    format!("repeat until <{} = \"false\">\n{}\nend", cond, body)
+                    format!("{}\nrepeat until <{} = \"false\">\n{}\n{}\n{}\nend",
+                        &*cond_statements,
+                        cond_expr,
+                        cond_post_process,
+                        body,
+                        cond_statements)
                 }
             });
         }
@@ -187,10 +196,12 @@ pub struct Expr<T : FieldSized>{
     expr: Vec<ExprTree>,
     phantom: PhantomData<T>
 }
-impl<T : FieldSized> Expr<T>{
+impl Expr<()> {
     fn create_tosh(self) -> String {
         ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
     }
+}
+impl<T : FieldSized> Expr<T>{
     pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = self.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
@@ -328,6 +339,24 @@ impl Div for Expr<f64> {
     type Output = Self;
     fn div(self, other: Self) -> Self {
         make_bin_op(self, "/", other)
+    }
+}
+impl Expr<f64> {
+    pub fn equals(mut self, mut other: Self) -> Expr<bool> {
+        let mut statements = self.statements;
+        statements.append(&mut other.statements);
+        let mut post_process = self.post_process;
+        post_process.append(&mut other.post_process);
+        Expr {
+            statements,
+            post_process,
+            expr: vec![ExprTree::BinBoolOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "=",
+                right: other.expr.pop().unwrap().into(),
+            }],
+            phantom: PhantomData
+        }
     }
 }
 impl<'a> From<&'a str> for Expr<String> {
@@ -583,7 +612,7 @@ pub struct Mut<T: FieldSized>{
     expr: Expr<T>
 }
 impl<T: FieldSized> Expr<T>{
-    pub fn mut_(self) -> Mut<T> {
+    pub fn mut_(self) -> Mut<T> {https://play.rust-lang.org/?version=stable&mode=debug&edition=2021
         Mut{expr: self}
     }
 }
@@ -648,6 +677,24 @@ impl<T: FieldSized> Mut<T> {
     }
 }
 
+impl Expr<()> {
+    pub fn while_(mut cond: Expr<bool>, mut body: Expr<()>) -> Expr<()>{
+        let mut body_trees = body.statements;
+        body_trees.append(&mut body.post_process);
+        Expr {
+            statements: vec![ExprTree::While{
+                cond_statements: cond.statements,
+                cond_expr: cond.expr.pop().unwrap().into(),
+                cond_post_process: cond.post_process,
+                body: body_trees
+            }],
+            post_process: vec![],
+            expr: vec![],
+            phantom: PhantomData
+        }
+    }
+}
+
 macro_rules! action {
     {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
         $e.var(&$stack, |$v| action!{$stack; $(let! $v2 = $e2;)* $e3})
@@ -659,14 +706,8 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! a = action!{
-            stack;
-            let! x = Expr::from(0.0).mut_();
-            let! _ = x.rewrite(&stack, 34.5.into());
-            x.get()
-        };
-        let! _ = a.get();
-        Expr::from(())
+        let! x = Expr::from(0.0).mut_();
+        Expr::while_(x.get().equals(Expr::from(0.0)), x.rewrite(&stack, x.get() + Expr::from(1.0)))
     };
     println!("{:?}", expr);
     println!("{}", expr.create_tosh());

@@ -24,11 +24,16 @@ impl fmt::Debug for VarID{
         formatter.write_str("VarID")
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ExprTree{
     Num(f64),
     Str(String),
     BinOp{
+        left: Box<ExprTree>,
+        right: Box<ExprTree>,
+        op: &'static str
+    },
+    BinBoolOp{
         left: Box<ExprTree>,
         right: Box<ExprTree>,
         op: &'static str
@@ -66,6 +71,10 @@ impl ExprTree{
                     Self::create_tosh(vec![*left].into_iter(), stacks),
                     op,
                     Self::create_tosh(vec![*right].into_iter(), stacks)),
+                ExprTree::BinBoolOp{left, op, right} => format!("<{} {} {}>",
+                    Self::create_tosh(vec![*left].into_iter(), stacks),
+                    op,
+                    Self::create_tosh(vec![*right].into_iter(), stacks)),
                 ExprTree::StackVar{var_id, stack: stack_name} => {
                     let stack = stacks.get(&stack_name).unwrap();
                     format!("(item {} of {})",
@@ -100,7 +109,7 @@ impl ExprTree{
                 ExprTree::If{cond, then, else_} => {
                     let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
                     let mut else_stacks = stacks.clone();
-                    format!("if <{} = 1> then\n{}\nelse\n{}\nend",
+                    format!("if <{} = \"true\"> then\n{}\nelse\n{}\nend",
                         cond,
                         Self::create_tosh(then.into_iter(), stacks),
                         Self::create_tosh(else_.into_iter(), &mut else_stacks)
@@ -137,6 +146,16 @@ impl FieldSized for bool {
 impl<T1: FieldSized, T2: FieldSized> FieldSized for (T1, T2) {
     fn size() -> usize {
         T1::size() + T2::size()
+    }
+}
+impl<T: FieldSized> FieldSized for Option<T> {
+    fn size() -> usize{
+        T::size() + 1
+    }
+}
+impl<T: FieldSized, E: FieldSized> FieldSized for Result<T, E> {
+    fn size() -> usize{
+        1 + core::cmp::max(T::size(), E::size())
     }
 }
 #[derive(Debug)]
@@ -305,7 +324,7 @@ impl <'a> From<bool> for Expr<'a, bool> {
         Expr {
             statements: vec![],
             post_process: vec![],
-            expr: vec![ExprTree::Num(if b {1.0} else {0.0})],
+            expr: vec![ExprTree::Str(if b {"true"} else {"false"}.to_string())],
             phantom: PhantomData
         }
     }
@@ -433,6 +452,114 @@ impl<'a, T0: FieldSized, T1: FieldSized> TupleExpr<'a, T0, T1> {
         }
     }
 }
+impl<'a, T: Into<Expr<'a, A>>, A: FieldSized> From<Option<T>> for Expr<'a, Option<A>> {
+    fn from(op: Option<T>) -> Self{
+        match op {
+            Some(t) => {
+                let mut a = t.into();
+                a.expr.insert(0, ExprTree::Str("some".to_string()));
+                Expr{
+                    statements: a.statements,
+                    post_process: a.post_process,
+                    expr: a.expr,
+                    phantom: PhantomData
+                }
+            },
+            None => {
+                let expr = vec![ExprTree::Str("none".to_string())].into_iter()
+                    .chain([|| ExprTree::Num(0.0)].iter().cycle().take(A::size()).map(|f| f())).collect();
+                Expr {
+                    statements: vec![],
+                    post_process: vec![],
+                    expr,
+                    phantom: PhantomData
+                }
+            }
+        }
+    }
+}
+impl<'a, T: FieldSized> Expr<'a, Option<T>> {
+    pub fn match_<'b, T2: FieldSized>(mut self, some: impl FnOnce(Expr<'a, T>) -> Expr<'b, T2>, none: Expr<'b, T2>) -> If<'b, T2> {
+        let value = self.expr.split_off(1);
+        let cond: Expr<'_, bool> = Expr{
+            statements: self.statements,
+            expr: vec![ExprTree::BinBoolOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "=",
+                right: ExprTree::Str("some".to_string()).into()
+            }],
+            post_process: self.post_process,
+            phantom: PhantomData
+        };
+        let value: Expr<'_, T> = Expr {
+            statements: vec![],
+            expr: value,
+            post_process: vec![],
+            phantom: PhantomData
+        };
+        Expr::if_(cond, some(value), none)
+    }
+}
+impl<'a, T: Into<Expr<'a, T2>>, E: Into<Expr<'a, E2>>, T2: FieldSized, E2: FieldSized>
+    From<Result<T, E>> for Expr<'a, Result<T2, E2>> {
+    fn from(result: Result<T, E>) -> Self {
+        let len = Result::<T2, E2>::size();
+        match result {
+            Ok(t) => {
+                let t2 = t.into();
+                let zero = [|| ExprTree::Num(0.0)].iter().cycle().take(len - (1 + T2::size())).map(|f| f());
+                Expr{
+                    statements: t2.statements,
+                    post_process: t2.post_process,
+                    expr: vec![ExprTree::Str("ok".to_string())].into_iter().chain(t2.expr).chain(zero).collect(),
+                    phantom: PhantomData
+                }
+            },
+            Err(e) => {
+                let e2 = e.into();
+                let zero = [|| ExprTree::Num(0.0)].iter().cycle().take(len - (1 + E2::size())).map(|f| f());
+                Expr{
+                    statements: e2.statements,
+                    post_process: e2.post_process,
+                    expr: vec![ExprTree::Str("err".to_string())].into_iter().chain(e2.expr).chain(zero).collect(),
+                    phantom: PhantomData
+                }
+            }
+        }
+    }
+}
+impl<'a, T: FieldSized, E: FieldSized> Expr<'a, Result<T, E>> {
+    pub fn match_<'b, T2: FieldSized>(
+        mut self,
+        ok: impl FnOnce(Expr<'a, T>) -> Expr<'b, T2>,
+        err: impl FnOnce(Expr<'a, E>) -> Expr<'b, T2>) -> If<'b, T2> {
+        let value = self.expr.split_off(1);
+        let cond: Expr<'_, bool> = Expr{
+            statements: self.statements,
+            expr: vec![ExprTree::BinBoolOp{
+                left: self.expr.pop().unwrap().into(),
+                op: "=",
+                right: ExprTree::Str("ok".to_string()).into()
+            }],
+            post_process: self.post_process,
+            phantom: PhantomData
+        };
+        let ok_value: Expr<'_, T> = Expr {
+            statements: vec![],
+            expr: value.clone().into_iter().take(T::size()).collect(),
+            post_process: vec![],
+            phantom: PhantomData
+        };
+        let err_value: Expr<'_, E> = Expr {
+            statements: vec![],
+            expr: value.into_iter().take(E::size()).collect(),
+            post_process: vec![],
+            phantom: PhantomData
+        };
+        Expr::if_(cond, ok(ok_value), err(err_value))
+    }
+}
+
 
 macro_rules! action {
     {$stack:expr; let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
@@ -445,10 +572,12 @@ fn main(){
     let stack = Stack::new("stack");
     let expr = action!{
         stack;
-        let! x = Expr::from(("A", 0.5));
-        let! (i, j) = x.get().tuple();
-        let! _ = i;
-        let! _ = j;
+        let! x = Expr::from(Some::<f64>(3.4));
+        let! a = x.get().match_(
+            |x| x + Expr::from(3.2),
+            Expr::from(0.5)
+        );
+        let! _ = a.get() * Expr::from(3.0);
         Expr::from(())
     };
     println!("{:?}", expr);

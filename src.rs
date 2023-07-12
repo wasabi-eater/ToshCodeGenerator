@@ -612,7 +612,7 @@ pub struct Mut<T: FieldSized>{
     expr: Expr<T>
 }
 impl<T: FieldSized> Expr<T>{
-    pub fn mut_(self) -> Mut<T> {https://play.rust-lang.org/?version=stable&mode=debug&edition=2021
+    pub fn mut_(self) -> Mut<T> {
         Mut{expr: self}
     }
 }

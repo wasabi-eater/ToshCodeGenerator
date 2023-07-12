@@ -70,42 +70,42 @@ enum ExprTree{
 }
 impl ExprTree{
     pub fn as_tosh_code(statements: impl Iterator<Item = ExprTree>) -> String{
-        Self::create_tosh(statements, &mut HashMap::new())
+        Self::create_tosh(statements, &mut HashMap::new()).join("\n")
     }
-    fn create_tosh(statements: impl Iterator<Item = ExprTree>, stacks: &mut HashMap<Rc<str>, Vec<VarID>>) -> String{
+    fn create_tosh(statements: impl Iterator<Item = ExprTree>, stacks: &mut HashMap<Rc<str>, Vec<VarID>>) -> Vec<String> {
         let mut code: Vec<String> = vec![];
         for expr in statements{
-            code.push(match expr {
-                ExprTree::Num(n) => n.to_string(),
-                ExprTree::Str(s) => format!("\"{}\"", s),
-                ExprTree::BinOp{left, op, right} => format!("({} {} {})",
-                    Self::create_tosh(vec![*left].into_iter(), stacks),
+            match expr {
+                ExprTree::Num(n) => code.push(n.to_string()),
+                ExprTree::Str(s) => code.push(format!("\"{}\"", s)),
+                ExprTree::BinOp{left, op, right} => code.push(format!("({} {} {})",
+                    Self::create_tosh(vec![*left].into_iter(), stacks).join(""),
                     op,
-                    Self::create_tosh(vec![*right].into_iter(), stacks)),
-                ExprTree::BinBoolOp{left, op, right} => format!("<{} {} {}>",
-                    Self::create_tosh(vec![*left].into_iter(), stacks),
+                    Self::create_tosh(vec![*right].into_iter(), stacks).join(""))),
+                ExprTree::BinBoolOp{left, op, right} => code.push(format!("<{} {} {}>",
+                    Self::create_tosh(vec![*left].into_iter(), stacks).join(""),
                     op,
-                    Self::create_tosh(vec![*right].into_iter(), stacks)),
+                    Self::create_tosh(vec![*right].into_iter(), stacks).join(""))),
                 ExprTree::StackVar{var_id, stack: stack_name} => {
                     let stack = stacks.get(&stack_name).unwrap();
-                    format!("(item {} of {})",
+                    code.push(format!("(item {} of {})",
                         stack.len() - stack.iter().position(|id| *id == var_id).unwrap(),
                         stack_name
-                    )
+                    ))
                 },
                 ExprTree::StackVarRewrite{var_id, stack: stack_name, expr} => {
                     let stack = stacks.get(&stack_name).unwrap();
-                    format!("replace item {} of {} with {}",
+                    code.push(format!("replace item {} of {} with {}",
                         stack.len() - stack.iter().position(|id| *id == var_id).unwrap(),
                         stack_name,
-                        Self::create_tosh(vec![*expr].into_iter(), stacks)
-                    )
+                        Self::create_tosh(vec![*expr].into_iter(), stacks).join("")
+                    ))
                 },
                 ExprTree::StackPush{var_id, stack: stack_name, expr} => {
-                    let insertion = format!("insert {} at 1 of {}",
-                        Self::create_tosh(vec![*expr].into_iter(), stacks),
+                    code.push(format!("insert {} at 1 of {}",
+                        Self::create_tosh(vec![*expr].into_iter(), stacks).join(""),
                         stack_name
-                    );
+                    ));
                     let stack = match stacks.get_mut(&stack_name) {
                         Some(stack) => stack,
                         None => {
@@ -114,41 +114,40 @@ impl ExprTree{
                         }
                     };
                     stack.push(var_id);
-                    insertion
                 },
                 ExprTree::StackDelete{var_id, stack: stack_name} => {
                     let stack = stacks.get_mut(&stack_name).unwrap();
                     let pos = stack.iter().position(|id| *id == var_id).unwrap();
                     stack.remove(pos);
-                    format!("delete {} of {}",
+                    code.push(format!("delete {} of {}",
                         stack.len() - pos + 1,
                         stack_name
-                    )
+                    ))
                 },
                 ExprTree::If{cond, then, else_} => {
-                    let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
+                    let mut cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
                     let mut else_stacks = stacks.clone();
-                    format!("if <{} = \"true\"> then\n{}\nelse\n{}\nend",
-                        cond,
-                        Self::create_tosh(then.into_iter(), stacks),
-                        Self::create_tosh(else_.into_iter(), &mut else_stacks)
-                    )
+                    code.push(format!("if {} = \"true\" then", cond.join("")));
+                    code.append(&mut Self::create_tosh(then.into_iter(), stacks));
+                    code.push(format!("else"));
+                    code.append(&mut Self::create_tosh(else_.into_iter(), &mut else_stacks));
+                    code.push("end".into());
                 },
                 ExprTree::While{cond_statements, cond_post_process, cond_expr, body} => {
-                    let cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
-                    let cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
-                    let cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
-                    let body = Self::create_tosh(body.into_iter(), stacks);
-                    format!("{}\nrepeat until <{} = \"false\">\n{}\n{}\n{}\nend",
-                        &*cond_statements,
-                        cond_expr,
-                        cond_post_process,
-                        body,
-                        cond_statements)
+                    let mut cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
+                    let mut cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
+                    let mut cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
+                    let mut body = Self::create_tosh(body.into_iter(), stacks);
+                    code.append(&mut cond_statements.clone());
+                    code.push(format!("repeat until {} = \"false\"", cond_expr.join("")));
+                    code.append(&mut cond_post_process);
+                    code.append(&mut body);
+                    code.append(&mut cond_statements);
+                    code.push("end".into());
                 }
-            });
+            }
         }
-        code.join("\n")
+        code
     }
 }
 pub trait FieldSized {

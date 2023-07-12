@@ -66,6 +66,11 @@ enum ExprTree{
         var_id: VarID,
         stack: Rc<str>,
         expr: Box<ExprTree>
+    },
+    AllocateMemory {
+        heap_mem: Rc<str>,
+        unused_mem: Rc<str>,
+        stack: Rc<str>
     }
 }
 impl ExprTree{
@@ -125,7 +130,7 @@ impl ExprTree{
                     ))
                 },
                 ExprTree::If{cond, then, else_} => {
-                    let mut cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
+                    let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
                     let mut else_stacks = stacks.clone();
                     code.push(format!("if {} = \"true\" then", cond.join("")));
                     code.append(&mut Self::create_tosh(then.into_iter(), stacks));
@@ -135,7 +140,7 @@ impl ExprTree{
                 },
                 ExprTree::While{cond_statements, cond_post_process, cond_expr, body} => {
                     let mut cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
-                    let mut cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
+                    let cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
                     let mut cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
                     let mut body = Self::create_tosh(body.into_iter(), stacks);
                     code.append(&mut cond_statements.clone());
@@ -144,7 +149,8 @@ impl ExprTree{
                     code.append(&mut body);
                     code.append(&mut cond_statements);
                     code.push("end".into());
-                }
+                },
+                ExprTree::AllocateMemory{heap_mem, unused_mem, stack} => todo!()
             }
         }
         code
@@ -691,6 +697,48 @@ impl Expr<()> {
             expr: vec![],
             phantom: PhantomData
         }
+    }
+}
+
+pub struct HeapMemory<T: FieldSized> {
+    main: Rc<str>,
+    unused_memory: Rc<str>,
+    phantom: PhantomData<T>
+}
+impl<T: FieldSized> HeapMemory<T> {
+    pub fn new(main: Rc<str>, unused_memory: Rc<str>) -> Self {
+        Self {
+            main,
+            unused_memory,
+            phantom: PhantomData
+        }
+    }
+    pub fn alloc(&self, expr: Expr<T>) -> Allocater<T> {
+        Allocater{
+            unused_memory: self.unused_memory.clone(),
+            main: self.main.clone(),
+            expr
+        }
+    }
+}
+
+pub struct Allocater<T: FieldSized> {
+    main: Rc<str>,
+    unused_memory: Rc<str>,
+    expr: Expr<T>
+}
+impl<T: FieldSized> Allocater<T> {
+    fn var<T2: FieldSized>(self, stack: &Stack, f: impl FnOnce(Expr<Mem<T>>) -> Expr<T2>) -> Expr<T2> {
+        todo!()
+    }
+}
+
+pub struct Mem<T: FieldSized> {
+    phantom: PhantomData<T>
+}
+impl<T: FieldSized> FieldSized for Mem<T> {
+    fn size() -> usize {
+        1
     }
 }
 

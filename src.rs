@@ -68,10 +68,19 @@ enum ExprTree{
         expr: Box<ExprTree>
     },
     AllocateMemory {
-        heap_mem: Rc<str>,
+        main_mem: Rc<str>,
         unused_mem: Rc<str>,
+        expr: Vec<ExprTree>,
+        var_id: VarID,
         stack: Rc<str>
-    }
+    },
+    FreeMemory {
+        pointer: Box<ExprTree>
+    },
+    CopyMemory {
+        pointer: VarID,
+        stack: Rc<str>
+    },
 }
 impl ExprTree{
     pub fn as_tosh_code(statements: impl Iterator<Item = ExprTree>) -> String{
@@ -150,7 +159,9 @@ impl ExprTree{
                     code.append(&mut cond_statements);
                     code.push("end".into());
                 },
-                ExprTree::AllocateMemory{heap_mem, unused_mem, stack} => todo!()
+                ExprTree::AllocateMemory{main_mem, unused_mem, stack, expr, var_id} => todo!(),
+                ExprTree::FreeMemory{pointer} => todo!(),
+                ExprTree::CopyMemory{pointer, stack} => todo!(),
             }
         }
         code
@@ -206,7 +217,7 @@ impl Expr<()> {
         ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
     }
 }
-impl<T : FieldSized> Expr<T>{
+impl<T : FieldSized + Clone> Expr<T>{
     pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = self.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
@@ -701,35 +712,56 @@ impl Expr<()> {
 }
 
 pub struct HeapMemory<T: FieldSized> {
-    main: Rc<str>,
-    unused_memory: Rc<str>,
+    main_mem: Rc<str>,
+    unused_mem: Rc<str>,
     phantom: PhantomData<T>
 }
 impl<T: FieldSized> HeapMemory<T> {
-    pub fn new(main: Rc<str>, unused_memory: Rc<str>) -> Self {
+    pub fn new(main_mem: Rc<str>, unused_mem: Rc<str>) -> Self {
         Self {
-            main,
-            unused_memory,
+            main_mem,
+            unused_mem,
             phantom: PhantomData
         }
     }
     pub fn alloc(&self, expr: Expr<T>) -> Allocater<T> {
         Allocater{
-            unused_memory: self.unused_memory.clone(),
-            main: self.main.clone(),
+            unused_mem: self.unused_mem.clone(),
+            main_mem: self.main_mem.clone(),
             expr
         }
     }
 }
 
 pub struct Allocater<T: FieldSized> {
-    main: Rc<str>,
-    unused_memory: Rc<str>,
+    main_mem: Rc<str>,
+    unused_mem: Rc<str>,
     expr: Expr<T>
 }
 impl<T: FieldSized> Allocater<T> {
-    fn var<T2: FieldSized>(self, stack: &Stack, f: impl FnOnce(Expr<Mem<T>>) -> Expr<T2>) -> Expr<T2> {
-        todo!()
+    pub fn var<T2: FieldSized>(self, stack: &Stack, f: impl FnOnce(Expr<Mem<T>>) -> Expr<T2>) -> Expr<T2> {
+        let var_id = VarID::new();
+        let mut statements = self.expr.statements;
+        statements.push(ExprTree::AllocateMemory{
+                main_mem: self.main_mem,
+                unused_mem: self.unused_mem,
+                expr: self.expr.expr,
+                var_id: var_id.clone(),
+                stack: stack.name.clone()
+            });
+        let mut post_process = self.expr.post_process;
+        post_process.insert(0, ExprTree::FreeMemory{
+            pointer: ExprTree::StackVar{
+                var_id: var_id.clone(),
+                stack: stack.name.clone()
+            }.into()
+        });
+        Expr {
+            statements: statements,
+            expr: vec![],
+            post_process,
+            phantom: PhantomData
+        }
     }
 }
 

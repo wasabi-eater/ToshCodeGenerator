@@ -4,7 +4,7 @@ use std::rc::Rc;
 use core::ops::*;
 use std::marker::PhantomData;
 #[derive(Clone)]
-struct VarID{
+pub struct VarID{
     r: Rc<bool>
 }
 impl VarID{
@@ -25,7 +25,7 @@ impl fmt::Debug for VarID{
     }
 }
 #[derive(Debug, Clone)]
-enum ExprTree{
+pub enum ExprTree{
     Num(f64),
     Str(String),
     BinOp{
@@ -78,8 +78,7 @@ enum ExprTree{
         pointer: Box<ExprTree>
     },
     CopyMemory {
-        pointer: VarID,
-        stack: Rc<str>
+        pointer: Box<ExprTree>
     },
 }
 impl ExprTree{
@@ -161,52 +160,132 @@ impl ExprTree{
                 },
                 ExprTree::AllocateMemory{main_mem, unused_mem, stack, expr, var_id} => todo!(),
                 ExprTree::FreeMemory{pointer} => todo!(),
-                ExprTree::CopyMemory{pointer, stack} => todo!(),
+                ExprTree::CopyMemory{pointer} => todo!(),
             }
         }
         code
     }
 }
-pub trait FieldSized {
+pub trait ExprObj {
     fn size() -> usize;
+    fn copy_action<'a>(expr: &'a [ExprTree]) -> Vec<ExprTree> where Self: Sized;
+    fn destructor<'a>(expr: &'a [ExprTree]) -> Vec<ExprTree> where Self: Sized;
 }
-impl FieldSized for () {
+impl ExprObj for () {
     fn size() -> usize {
         0
     }
+    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
+    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
 }
-impl FieldSized for f64 {
+impl ExprObj for f64 {
     fn size() -> usize {
         1
     }
+    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
+    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
 }
-impl FieldSized for String {
+impl ExprObj for String {
     fn size() -> usize {
         1
     }
+    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
+    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
 }
-impl FieldSized for bool {
+impl ExprObj for bool {
     fn size() -> usize{
         1
     }
+    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
+    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
+        vec![]
+    }
 }
-impl<T1: FieldSized, T2: FieldSized> FieldSized for (T1, T2) {
+impl<T1: ExprObj, T2: ExprObj> ExprObj for (T1, T2) {
     fn size() -> usize {
         T1::size() + T2::size()
     }
+    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree>{
+        let mut trees = T1::copy_action(&expr[0..T1::size()]);
+        trees.append(&mut T2::copy_action(&expr[T1::size()..expr.len()]));
+        trees
+    }
+    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree>{
+        let mut trees = T1::destructor(&expr[0..T1::size()]);
+        trees.append(&mut T2::destructor(&expr[T1::size()..expr.len()]));
+        trees
+    }
 }
-impl<T: FieldSized> FieldSized for Option<T> {
+impl<T: ExprObj> ExprObj for Option<T> {
     fn size() -> usize{
         T::size() + 1
     }
+    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree> {
+        vec![ExprTree::If{
+            cond: ExprTree::BinBoolOp{
+                left: expr[0].clone().into(),
+                op: "=",
+                right: ExprTree::Str("some".into()).into()
+            }.into(),
+            then: T::copy_action(&expr[1..expr.len()]),
+            else_: vec![]
+        }]
+    }
+    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree> {
+        vec![ExprTree::If{
+            cond: ExprTree::BinBoolOp{
+                left: expr[0].clone().into(),
+                op: "=",
+                right: ExprTree::Str("some".into()).into()
+            }.into(),
+            then: T::destructor(&expr[1..expr.len()]),
+            else_: vec![]
+        }]
+    }
 }
-impl<T: FieldSized, E: FieldSized> FieldSized for Result<T, E> {
+impl<T: ExprObj, E: ExprObj> ExprObj for Result<T, E> {
     fn size() -> usize{
         1 + core::cmp::max(T::size(), E::size())
     }
+    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree> {
+        vec![ExprTree::If{
+            cond: ExprTree::BinBoolOp{
+                left: expr[0].clone().into(),
+                op: "=",
+                right: ExprTree::Str("ok".into()).into()
+            }.into(),
+            then: T::copy_action(&expr[1..T::size()+1]),
+            else_: E::copy_action(&expr[T::size()+1..expr.len()])
+        }]
+    }
+    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree> {
+        vec![ExprTree::If{
+            cond: ExprTree::BinBoolOp{
+                left: expr[0].clone().into(),
+                op: "=",
+                right: ExprTree::Str("ok".into()).into()
+            }.into(),
+            then: T::destructor(&expr[1..T::size()+1]),
+            else_: E::destructor(&expr[T::size()+1..expr.len()])
+        }]
+    }
 }
 #[derive(Debug)]
-pub struct Expr<T : FieldSized>{
+pub struct Expr<T : ExprObj>{
     statements: Vec<ExprTree>,
     post_process: Vec<ExprTree>,
     expr: Vec<ExprTree>,
@@ -217,8 +296,8 @@ impl Expr<()> {
         ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
     }
 }
-impl<T : FieldSized + Clone> Expr<T>{
-    pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
+impl<T: ExprObj + Clone> Expr<T>{
+    pub fn var<T2: ExprObj>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = self.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
         let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
@@ -253,7 +332,7 @@ impl From<()> for Expr<()> {
         }
     }
 }
-impl <T1: Into<Expr<A>>, T2: Into<Expr<B>>, A: FieldSized, B: FieldSized> From<(T1, T2)> for Expr<(A, B)> {
+impl <T1: Into<Expr<A>>, T2: Into<Expr<B>>, A: ExprObj, B: ExprObj> From<(T1, T2)> for Expr<(A, B)> {
     fn from(tuple: (T1, T2)) -> Self {
         let (mut x, mut y) = (tuple.0.into(), tuple.1.into());
         let mut statements = x.statements;
@@ -270,7 +349,7 @@ impl <T1: Into<Expr<A>>, T2: Into<Expr<B>>, A: FieldSized, B: FieldSized> From<(
         }
     }
 }
-impl <T1: FieldSized, T2: FieldSized> Expr<(T1, T2)> {
+impl <T1: ExprObj, T2: ExprObj> Expr<(T1, T2)> {
     pub fn item0(mut self) -> Expr<T1> {
         let _ = self.expr.split_off(T1::size());
         Expr{
@@ -405,12 +484,12 @@ impl Stack{
     }
 }
 
-pub struct Variable<T : FieldSized>{
+pub struct Variable<T : ExprObj>{
     stack: Rc<str>,
     phantom: PhantomData<T>,
     var_id: Vec<VarID>
 }
-impl<T : FieldSized> Variable<T> {
+impl<T : ExprObj> Variable<T> {
     pub fn get(&self) -> Expr<T>{
         Expr{
             statements: vec![],
@@ -425,18 +504,18 @@ impl<T : FieldSized> Variable<T> {
         }
     }
 }
-pub struct If<T: FieldSized>{
+pub struct If<T: ExprObj>{
     cond: Expr<bool>,
     then: Expr<T>,
     else_: Expr<T>
 }
-impl<T: FieldSized> Expr<T> {
+impl<T: ExprObj> Expr<T> {
     pub fn if_(cond: Expr<bool>, then: Expr<T>, else_: Expr<T>) -> If<T> {
         If {cond, then, else_}
     }
 }
-impl<T: FieldSized> If<T> {
-    pub fn var<T2 : FieldSized>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
+impl<T: ExprObj> If<T> {
+    pub fn var<T2: ExprObj>(mut self, stack: &Stack, f: impl FnOnce(Variable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = T::size();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
         let mut ret = f(Variable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
@@ -479,16 +558,16 @@ impl<T: FieldSized> If<T> {
         }
     }
 }
-pub struct TupleExpr<T0: FieldSized, T1: FieldSized>{
+pub struct TupleExpr<T0: ExprObj, T1: ExprObj>{
     tuple: Expr<(T0, T1)>
 }
-impl<T0: FieldSized, T1: FieldSized> Expr<(T0, T1)> {
+impl<T0: ExprObj, T1: ExprObj> Expr<(T0, T1)> {
     pub fn tuple(self) -> TupleExpr<T0, T1>{
         TupleExpr{tuple: self}
     }
 }
-impl<T0: FieldSized, T1: FieldSized> TupleExpr<T0, T1> {
-    pub fn var<T2: FieldSized>(
+impl<T0: ExprObj, T1: ExprObj> TupleExpr<T0, T1> {
+    pub fn var<T2: ExprObj>(
         mut self, _: &Stack,
         f: impl FnOnce((Expr<T0>, Expr<T1>)) -> Expr<T2>) -> Expr<T2> {
         let item1 = self.tuple.expr.split_off(T1::size());
@@ -517,7 +596,7 @@ impl<T0: FieldSized, T1: FieldSized> TupleExpr<T0, T1> {
         }
     }
 }
-impl<T: Into<Expr<A>>, A: FieldSized> From<Option<T>> for Expr<Option<A>> {
+impl<T: Into<Expr<A>>, A: ExprObj> From<Option<T>> for Expr<Option<A>> {
     fn from(op: Option<T>) -> Self{
         match op {
             Some(t) => {
@@ -543,8 +622,8 @@ impl<T: Into<Expr<A>>, A: FieldSized> From<Option<T>> for Expr<Option<A>> {
         }
     }
 }
-impl<T: FieldSized> Expr<Option<T>> {
-    pub fn match_<T2: FieldSized>(mut self, some: impl FnOnce(Expr<T>) -> Expr<T2>, none: Expr<T2>) -> If<T2> {
+impl<T: ExprObj> Expr<Option<T>> {
+    pub fn match_<T2: ExprObj>(mut self, some: impl FnOnce(Expr<T>) -> Expr<T2>, none: Expr<T2>) -> If<T2> {
         let value = self.expr.split_off(1);
         let cond: Expr<bool> = Expr{
             statements: self.statements,
@@ -565,7 +644,7 @@ impl<T: FieldSized> Expr<Option<T>> {
         Expr::if_(cond, some(value), none)
     }
 }
-impl<T: Into<Expr<T2>>, E: Into<Expr<E2>>, T2: FieldSized, E2: FieldSized>
+impl<T: Into<Expr<T2>>, E: Into<Expr<E2>>, T2: ExprObj, E2: ExprObj>
     From<Result<T, E>> for Expr<Result<T2, E2>> {
     fn from(result: Result<T, E>) -> Self {
         let len = Result::<T2, E2>::size();
@@ -593,8 +672,8 @@ impl<T: Into<Expr<T2>>, E: Into<Expr<E2>>, T2: FieldSized, E2: FieldSized>
         }
     }
 }
-impl<T: FieldSized, E: FieldSized> Expr<Result<T, E>> {
-    pub fn match_<T2: FieldSized>(
+impl<T: ExprObj, E: ExprObj> Expr<Result<T, E>> {
+    pub fn match_<T2: ExprObj>(
         mut self,
         ok: impl FnOnce(Expr<T>) -> Expr<T2>,
         err: impl FnOnce(Expr<E>) -> Expr<T2>) -> If<T2> {
@@ -624,20 +703,20 @@ impl<T: FieldSized, E: FieldSized> Expr<Result<T, E>> {
         Expr::if_(cond, ok(ok_value), err(err_value))
     }
 }
-pub struct Mut<T: FieldSized>{
+pub struct Mut<T: ExprObj>{
     expr: Expr<T>
 }
-impl<T: FieldSized> Expr<T>{
+impl<T: ExprObj> Expr<T>{
     pub fn mut_(self) -> Mut<T> {
         Mut{expr: self}
     }
 }
-pub struct MutVariable<T : FieldSized>{
+pub struct MutVariable<T: ExprObj>{
     stack: Rc<str>,
     phantom: PhantomData<T>,
     var_id: Vec<VarID>
 }
-impl<T : FieldSized> MutVariable<T> {
+impl<T: ExprObj> MutVariable<T> {
     pub fn get(&self) -> Expr<T>{
         Expr{
             statements: vec![],
@@ -666,8 +745,8 @@ impl<T : FieldSized> MutVariable<T> {
         }
     }
 }
-impl<T: FieldSized> Mut<T> {
-    pub fn var<T2: FieldSized>(mut self, stack: &Stack, f: impl FnOnce(MutVariable<T>) -> Expr<T2>) -> Expr<T2> {
+impl<T: ExprObj> Mut<T> {
+    pub fn var<T2: ExprObj>(mut self, stack: &Stack, f: impl FnOnce(MutVariable<T>) -> Expr<T2>) -> Expr<T2> {
         let expr_count = self.expr.expr.len();
         let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
         let mut ret = f(MutVariable{stack: stack.name.clone(), phantom: PhantomData, var_id: var_id.clone()});
@@ -711,12 +790,12 @@ impl Expr<()> {
     }
 }
 
-pub struct HeapMemory<T: FieldSized> {
+pub struct HeapMemory<T: ExprObj> {
     main_mem: Rc<str>,
     unused_mem: Rc<str>,
     phantom: PhantomData<T>
 }
-impl<T: FieldSized> HeapMemory<T> {
+impl<T: ExprObj> HeapMemory<T> {
     pub fn new(main_mem: Rc<str>, unused_mem: Rc<str>) -> Self {
         Self {
             main_mem,
@@ -733,13 +812,13 @@ impl<T: FieldSized> HeapMemory<T> {
     }
 }
 
-pub struct Allocater<T: FieldSized> {
+pub struct Allocater<T: ExprObj> {
     main_mem: Rc<str>,
     unused_mem: Rc<str>,
     expr: Expr<T>
 }
-impl<T: FieldSized> Allocater<T> {
-    pub fn var<T2: FieldSized>(self, stack: &Stack, f: impl FnOnce(Expr<Mem<T>>) -> Expr<T2>) -> Expr<T2> {
+impl<T: ExprObj> Allocater<T> {
+    pub fn var<T2: ExprObj>(self, stack: &Stack, f: impl FnOnce(Expr<Mem<T>>) -> Expr<T2>) -> Expr<T2> {
         let var_id = VarID::new();
         let mut statements = self.expr.statements;
         statements.push(ExprTree::AllocateMemory{
@@ -765,12 +844,22 @@ impl<T: FieldSized> Allocater<T> {
     }
 }
 
-pub struct Mem<T: FieldSized> {
+pub struct Mem<T: ExprObj> {
     phantom: PhantomData<T>
 }
-impl<T: FieldSized> FieldSized for Mem<T> {
+impl<T: ExprObj> ExprObj for Mem<T> {
     fn size() -> usize {
         1
+    }
+    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree>{
+        vec![
+            ExprTree::CopyMemory{pointer: expr[0].clone().into()}
+        ]
+    }
+    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree>{
+        vec![
+            ExprTree::FreeMemory{pointer: expr[0].clone().into()}
+        ]
     }
 }
 

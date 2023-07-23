@@ -236,160 +236,167 @@ impl ExprTree{
 }
 pub trait ExprObj {
     fn size() -> usize;
-    fn copy_action<'a>(expr: &'a [ExprTree]) -> Vec<ExprTree> where Self: Sized;
-    fn destructor<'a>(expr: &'a [ExprTree]) -> Vec<ExprTree> where Self: Sized;
+    fn copy_action<'a>(expr: &'a [ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> where Self: Sized;
+    fn destructor<'a>(expr: &'a [ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> where Self: Sized;
 }
 impl ExprObj for () {
     fn size() -> usize {
         0
     }
-    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn copy_action(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
-    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn destructor(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
 }
 impl ExprObj for f64 {
     fn size() -> usize {
         1
     }
-    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn copy_action(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
-    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn destructor(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
 }
 impl ExprObj for String {
     fn size() -> usize {
         1
     }
-    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn copy_action(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
-    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn destructor(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
 }
 impl ExprObj for bool {
     fn size() -> usize{
         1
     }
-    fn copy_action(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn copy_action(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
-    fn destructor(_: &[ExprTree]) -> Vec<ExprTree>{
-        vec![]
+    fn destructor(_: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(vec![].into_iter())
     }
 }
 impl<T1: ExprObj, T2: ExprObj> ExprObj for (T1, T2) {
     fn size() -> usize {
         T1::size() + T2::size()
     }
-    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree>{
-        let mut trees = T1::copy_action(&expr[0..T1::size()]);
-        trees.append(&mut T2::copy_action(&expr[T1::size()..expr.len()]));
-        trees
+    fn copy_action(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            T1::copy_action(&expr[0..T1::size()])
+            .chain(T2::copy_action(&expr[T1::size()..expr.len()]))
+        )
     }
-    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree>{
-        let mut trees = T1::destructor(&expr[0..T1::size()]);
-        trees.append(&mut T2::destructor(&expr[T1::size()..expr.len()]));
-        trees
+    fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            T1::destructor(&expr[0..T1::size()])
+            .chain(T2::destructor(&expr[T1::size()..expr.len()]))
+        )
     }
 }
 impl<T: ExprObj> ExprObj for Option<T> {
     fn size() -> usize{
         T::size() + 1
     }
-    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree> {
-        vec![ExprTree::If{
-            cond: ExprTree::BinBoolOp{
-                left: expr[0].clone().into(),
-                op: "=",
-                right: ExprTree::Str("some".into()).into()
-            }.into(),
-            then: T::copy_action(&expr[1..expr.len()]),
-            else_: vec![]
-        }]
+    fn copy_action(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            vec![ExprTree::If{
+                cond: ExprTree::BinBoolOp{
+                    left: expr[0].clone().into(),
+                    op: "=",
+                    right: ExprTree::Str("some".into()).into()
+                }.into(),
+                then: T::copy_action(&expr[1..expr.len()]).collect(),
+                else_: vec![]
+            }].into_iter()
+        )
     }
-    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree> {
-        vec![ExprTree::If{
-            cond: ExprTree::BinBoolOp{
-                left: expr[0].clone().into(),
-                op: "=",
-                right: ExprTree::Str("some".into()).into()
-            }.into(),
-            then: T::destructor(&expr[1..expr.len()]),
-            else_: vec![]
-        }]
+    fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            vec![ExprTree::If{
+                cond: ExprTree::BinBoolOp{
+                    left: expr[0].clone().into(),
+                    op: "=",
+                    right: ExprTree::Str("some".into()).into()
+                }.into(),
+                then: T::destructor(&expr[1..expr.len()]).collect(),
+                else_: vec![]
+            }].into_iter()
+        )
     }
 }
 impl<T: ExprObj, E: ExprObj> ExprObj for Result<T, E> {
     fn size() -> usize{
         1 + core::cmp::max(T::size(), E::size())
     }
-    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree> {
-        vec![ExprTree::If{
-            cond: ExprTree::BinBoolOp{
-                left: expr[0].clone().into(),
-                op: "=",
-                right: ExprTree::Str("ok".into()).into()
-            }.into(),
-            then: T::copy_action(&expr[1..T::size()+1]),
-            else_: E::copy_action(&expr[T::size()+1..expr.len()])
-        }]
+    fn copy_action(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            vec![ExprTree::If{
+                cond: ExprTree::BinBoolOp{
+                    left: expr[0].clone().into(),
+                    op: "=",
+                    right: ExprTree::Str("ok".into()).into()
+                }.into(),
+                then: T::copy_action(&expr[1..T::size()+1]).collect(),
+                else_: E::copy_action(&expr[T::size()+1..expr.len()]).collect()
+            }].into_iter()
+        )
     }
-    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree> {
-        vec![ExprTree::If{
-            cond: ExprTree::BinBoolOp{
-                left: expr[0].clone().into(),
-                op: "=",
-                right: ExprTree::Str("ok".into()).into()
-            }.into(),
-            then: T::destructor(&expr[1..T::size()+1]),
-            else_: E::destructor(&expr[T::size()+1..expr.len()])
-        }]
+    fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        Box::new(
+            vec![ExprTree::If{
+                cond: ExprTree::BinBoolOp{
+                    left: expr[0].clone().into(),
+                    op: "=",
+                    right: ExprTree::Str("ok".into()).into()
+                }.into(),
+                then: T::destructor(&expr[1..T::size()+1]).collect(),
+                else_: E::destructor(&expr[T::size()+1..expr.len()]).collect()
+            }].into_iter()
+        )
     }
 }
-#[derive(Debug)]
+
 pub struct Expr<T : ExprObj, S: Stack>{
-    statements: Vec<ExprTree>,
-    post_process: Vec<ExprTree>,
-    expr: Vec<ExprTree>,
+    statements: Box<dyn Iterator<Item = ExprTree>>,
+    post_process: Box<dyn Iterator<Item = ExprTree>>,
+    expr: Box<dyn Iterator<Item = ExprTree>>,
     phantom: PhantomData<(T, S)>
 }
 impl<S: Stack> Expr<(), S> {
     fn create_tosh(self) -> String {
-        ExprTree::as_tosh_code(self.statements.into_iter().chain(self.post_process))
+        ExprTree::as_tosh_code(self.statements.chain(self.post_process))
     }
 }
 impl<T: ExprObj, S: Stack> Expr<T, S>{
-    pub fn var<T2: ExprObj>(mut self, f: impl FnOnce(Variable<T, S>) -> Expr<T2, S>) -> Expr<T2, S> {
-        let expr_count = self.expr.len();
-        let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
-        let mut ret = f(Variable{phantom: PhantomData, var_id: var_id.clone()});
-        let mut statements = self.statements;
-        for (expr, var_id) in self.expr.into_iter().zip(var_id.clone()) {
-            statements.push(ExprTree::StackPush{
-                stack: S::name(),
-                var_id,
-                expr: expr.into()
-            });
-        }
-        statements.append(&mut self.post_process);
-        statements.append(&mut ret.statements);
-        statements.append(&mut T::destructor(&*var_id.clone().into_iter().map(|var_id| ExprTree::StackVar{
-            var_id,
-            stack: S::name()
-        }).collect::<Vec<_>>()));
-        
-        for var_id in var_id.into_iter().rev() {
-            ret.post_process.push(ExprTree::StackDelete{stack: S::name(), var_id});
-        }
+    pub fn var<T2: ExprObj>(self, f: impl FnOnce(Variable<T, S>) -> Expr<T2, S>) -> Expr<T2, S> {
+        let var_id: Vec<VarID> = (0..T::size()).map(|_| VarID::new()).collect();
+        let ret = f(Variable{phantom: PhantomData, var_id: var_id.clone()});
+        let statements = self.statements
+            .chain(self.expr.zip(var_id.clone()).map(|(expr, var_id)|
+                ExprTree::StackPush{
+                    stack: S::name(),
+                    var_id,
+                    expr: expr.into()
+                }))
+            .chain(self.post_process)
+            .chain(ret.statements)
+            .chain(T::destructor(&*var_id.clone().into_iter().map(|var_id| ExprTree::StackVar{
+                    var_id,
+                    stack: S::name()
+                }).collect::<Vec<_>>()));
+        let post_process = ret.post_process.chain(var_id.into_iter().rev().map(|var_id|
+                ExprTree::StackDelete{stack: S::name(), var_id}
+            ));
         Expr {
-            statements,
-            post_process: ret.post_process,
+            statements: Box::new(statements),
+            post_process: Box::new(post_process),
             expr: ret.expr,
             phantom: PhantomData
         }
@@ -398,45 +405,37 @@ impl<T: ExprObj, S: Stack> Expr<T, S>{
 impl<S: Stack> From<()> for Expr<(), S> {
     fn from(_: ()) -> Self {
         Expr {
-            statements: vec![],
-            post_process: vec![],
-            expr: vec![],
+            statements: Box::new(vec![].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![].into_iter()),
             phantom: PhantomData
         }
     }
 }
 impl <T1: Into<Expr<A, S>>, T2: Into<Expr<B, S>>, A: ExprObj, B: ExprObj, S: Stack> From<(T1, T2)> for Expr<(A, B), S> {
     fn from(tuple: (T1, T2)) -> Self {
-        let (mut x, mut y) = (tuple.0.into(), tuple.1.into());
-        let mut statements = x.statements;
-        statements.append(&mut y.statements);
-        let mut post_process = y.post_process;
-        post_process.append(&mut x.post_process);
-        let mut expr = x.expr;
-        expr.append(&mut y.expr);
+        let (x, y) = (tuple.0.into(), tuple.1.into());
         Expr {
-            statements,
-            post_process,
-            expr,
+            statements: Box::new(x.statements.chain(y.statements)),
+            post_process: Box::new(x.post_process.chain(y.post_process)),
+            expr: Box::new(x.expr.chain(y.expr)),
             phantom: PhantomData
         }
     }
 }
 impl <T1: ExprObj, T2: ExprObj, S: Stack> Expr<(T1, T2), S> {
-    pub fn item0(mut self) -> Expr<T1, S> {
-        let _ = self.expr.split_off(T1::size());
+    pub fn item0(self) -> Expr<T1, S> {
         Expr{
             statements: self.statements,
-            expr: self.expr,
+            expr: Box::new(self.expr.take(T1::size())),
             post_process: self.post_process,
             phantom: PhantomData
         }
     }
-    pub fn item1(mut self) -> Expr<T2, S> {
-        let t2_expr = self.expr.split_off(T1::size());
+    pub fn item1(self) -> Expr<T2, S> {
         Expr{
             statements: self.statements,
-            expr: t2_expr,
+            expr: Box::new(self.expr.skip(T1::size())),
             post_process: self.post_process,
             phantom: PhantomData
         }
@@ -445,9 +444,9 @@ impl <T1: ExprObj, T2: ExprObj, S: Stack> Expr<(T1, T2), S> {
 impl<S: Stack> From<f64> for Expr<f64, S> {
     fn from(n: f64) -> Self {
         Expr{
-            statements: vec![],
-            post_process: vec![],
-            expr: vec![ExprTree::Num(n)],
+            statements: Box::new(vec![].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![ExprTree::Num(n)].into_iter()),
             phantom: PhantomData
         }
     }
@@ -455,34 +454,43 @@ impl<S: Stack> From<f64> for Expr<f64, S> {
 impl<S: Stack> Neg for Expr<f64, S>{
     type Output = Self;
     fn neg(mut self) -> Self {
+        let expr = ExprTree::BinOp{
+            left: ExprTree::Num(0.0).into(),
+            op: "-",
+            right: self.expr.nth(0).unwrap().into()
+        };
         Expr{
             statements: self.statements,
             post_process: self.post_process,
-            expr: vec![ExprTree::BinOp{
-                left: ExprTree::Num(0.0).into(),
-                op: "-",
-                right: self.expr.pop().unwrap().into()
-            }],
+            expr: Box::new(vec![expr].into_iter()),
             phantom: PhantomData
         }
     }
 }
 fn make_bin_op<S: Stack>(mut left: Expr<f64, S>, op: &'static str, mut right: Expr<f64, S>) -> Expr<f64, S>{
-    let mut statements = left.statements;
-    statements.append(&mut right.statements);
-    let mut post_process = left.post_process;
-    post_process.append(&mut right.post_process);
+    let expr = ExprTree::BinOp {
+        left: left.expr.nth(0).unwrap().into(),
+        op,
+        right: right.expr.nth(0).unwrap().into()
+    };
     Expr {
-        statements,
-        post_process,
+        statements: Box::new(left.statements.chain(right.statements)),
+        post_process: Box::new(left.post_process.chain(right.post_process)),
         phantom: PhantomData,
-        expr: vec![
-            ExprTree::BinOp {
-                left: left.expr.pop().unwrap().into(),
-                op,
-                right: right.expr.pop().unwrap().into()
-            }
-        ]
+        expr: Box::new(vec![expr].into_iter())
+    }
+}
+fn make_bin_bool_op<S: Stack>(mut left: Expr<f64, S>, op: &'static str, mut right: Expr<f64, S>) -> Expr<bool, S>{
+    let expr = ExprTree::BinBoolOp {
+        left: left.expr.nth(0).unwrap().into(),
+        op,
+        right: right.expr.nth(0).unwrap().into()
+    };
+    Expr {
+        statements: Box::new(left.statements.chain(right.statements)),
+        post_process: Box::new(left.post_process.chain(right.post_process)),
+        phantom: PhantomData,
+        expr: Box::new(vec![expr].into_iter())
     }
 }
 impl<S: Stack> Add for Expr<f64, S> {
@@ -510,29 +518,19 @@ impl<S: Stack> Div for Expr<f64, S> {
     }
 }
 impl<S: Stack> Expr<f64, S> {
-    pub fn equals(mut self, mut other: Self) -> Expr<bool, S> {
-        let mut statements = self.statements;
-        statements.append(&mut other.statements);
-        let mut post_process = self.post_process;
-        post_process.append(&mut other.post_process);
-        Expr {
-            statements,
-            post_process,
-            expr: vec![ExprTree::BinBoolOp{
-                left: self.expr.pop().unwrap().into(),
-                op: "=",
-                right: other.expr.pop().unwrap().into(),
-            }],
-            phantom: PhantomData
-        }
+    pub fn equals(self, other: Self) -> Expr<bool, S> {
+        make_bin_bool_op(self, "=", other)
+    }
+    pub fn less_than(self, other: Self) -> Expr<bool, S> {
+        make_bin_bool_op(self, "<", other)
     }
 }
 impl<'a, S: Stack> From<&'a str> for Expr<String, S> {
     fn from(s: &str) -> Self {
         Expr {
-            statements: vec![],
-            post_process: vec![],
-            expr: vec![ExprTree::Str(s.into())],
+            statements: Box::new(vec![].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![ExprTree::Str(s.into())].into_iter()),
             phantom: PhantomData
         }
     }
@@ -540,9 +538,9 @@ impl<'a, S: Stack> From<&'a str> for Expr<String, S> {
 impl<S: Stack> From<bool> for Expr<bool, S> {
     fn from(b: bool) -> Self {
         Expr {
-            statements: vec![],
-            post_process: vec![],
-            expr: vec![ExprTree::Str(if b {"true"} else {"false"}.to_string())],
+            statements: Box::new(vec![].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![ExprTree::Str(if b {"true"} else {"false"}.to_string())].into_iter()),
             phantom: PhantomData
         }
     }
@@ -559,73 +557,57 @@ pub struct Variable<T : ExprObj, S: Stack>{
 impl<T : ExprObj, S: Stack> Variable<T, S> {
     pub fn get(&self) -> Expr<T, S>{
         let expr: Vec<_> = self.var_id.iter().map(|var_id|
-                    ExprTree::StackVar{
-                        stack: S::name(),
-                        var_id: var_id.clone()
-                    }
-                ).collect();
+                ExprTree::StackVar{ stack: S::name(), var_id: var_id.clone() }
+            ).collect();
         Expr{
             statements: T::copy_action(&*expr),
-            post_process: vec![],
-            expr,
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(expr.into_iter()),
             phantom: PhantomData
         }
     }
-}
-pub struct If<T: ExprObj, S: Stack>{
-    cond: Expr<bool, S>,
-    then: Expr<T, S>,
-    else_: Expr<T, S>
 }
 impl<T: ExprObj, S: Stack> Expr<T, S> {
-    pub fn if_(cond: Expr<bool, S>, then: Expr<T, S>, else_: Expr<T, S>) -> If<T, S> {
-        If {cond, then, else_}
-    }
-}
-impl<T: ExprObj, S: Stack> If<T, S> {
-    pub fn var<T2: ExprObj>(mut self, f: impl FnOnce(Variable<T, S>) -> Expr<T2, S>) -> Expr<T2, S> {
-        let expr_count = T::size();
-        let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
-        let mut ret = f(Variable{phantom: PhantomData, var_id: var_id.clone()});
-        let mut then = self.then.statements;
-        let mut else_ = self.else_.statements;
-        for (expr, var_id) in self.then.expr.into_iter().zip(var_id.clone()) {
-            then.push(ExprTree::StackPush{
-                var_id,
-                stack: S::name(),
-                expr: expr.into()
-            });
-        }
-        for (expr, var_id) in self.else_.expr.into_iter().zip(var_id.clone()) {
-            else_.push(ExprTree::StackPush{
-                var_id,
-                stack: S::name(),
-                expr: expr.into()
-            });
-        }
-        then.append(&mut self.then.post_process);
-        else_.append(&mut self.else_.post_process);
-        let mut statements = self.cond.statements;
-        statements.push(ExprTree::If{
-           cond: self.cond.expr.pop().unwrap().into(),
-           then,
-           else_
-        });
-        statements.append(&mut ret.statements);
-        let mut post_process = self.cond.post_process;
-        post_process.append(&mut ret.post_process);
-        for var_id in var_id.into_iter().rev() {
-            post_process.push(ExprTree::StackDelete{stack: S::name(), var_id});
-        }
+    pub fn if_(mut cond: Expr<bool, S>, then: Self, else_: Self) -> Self {
+        let var_id: Vec<VarID> = (0..T::size()).map(|_| VarID::new()).collect();
+        
+        let then_statements = then.statements
+            .chain(then.expr.zip(var_id.clone()).map(|(expr, var_id)|
+                    ExprTree::StackPush{var_id, stack: S::name(), expr: expr.into()}
+                ))
+            .chain(then.post_process);
+
+        let else_statements = else_.statements
+            .chain(else_.expr.zip(var_id.clone()).map(|(expr, var_id)|
+                    ExprTree::StackPush{var_id, stack: S::name(), expr: expr.into()}
+                ))
+            .chain(else_.post_process);
+        
+        let statements = cond.statements
+            .chain(vec![ExprTree::If{
+                    cond: cond.expr.nth(0).unwrap().into(),
+                    then: then_statements.collect(),
+                    else_: else_statements.collect()
+                }]);
+        
+        let post_process = cond.post_process
+            .chain(var_id.clone().into_iter().rev().map(|var_id|
+                    ExprTree::StackDelete{stack: S::name(), var_id}
+                ));
+        
+        let expr = var_id
+            .into_iter()
+            .map(|var_id| ExprTree::StackVar{var_id, stack: S::name()});
         
         Expr {
-            statements,
-            post_process,
-            expr: ret.expr,
+            statements: Box::new(statements),
+            expr: Box::new(expr),
+            post_process: Box::new(post_process),
             phantom: PhantomData
         }
     }
 }
+
 pub struct TupleExpr<T0: ExprObj, T1: ExprObj, S: Stack>{
     tuple: Expr<(T0, T1), S>
 }
@@ -635,30 +617,27 @@ impl<T0: ExprObj, T1: ExprObj, S: Stack> Expr<(T0, T1), S> {
     }
 }
 impl<T0: ExprObj, T1: ExprObj, S: Stack> TupleExpr<T0, T1, S> {
-    pub fn var<T2: ExprObj>(
-        mut self,
-        f: impl FnOnce((Expr<T0, S>, Expr<T1, S>)) -> Expr<T2, S>) -> Expr<T2, S> {
-        let item1 = self.tuple.expr.split_off(T1::size());
-        let item0 = self.tuple.expr;
-        let mut ret = f((
+    pub fn var<T2: ExprObj>(self, f: impl FnOnce((Expr<T0, S>, Expr<T1, S>)) -> Expr<T2, S>) -> Expr<T2, S> {
+        let mut expr: Vec<_> = self.tuple.expr.collect();
+        let item1 = expr.split_off(T1::size());
+        let item0 = expr;
+        let ret = f((
             Expr{
-                statements: vec![],
-                post_process: vec![],
-                expr: item0,
+                statements: Box::new(vec![].into_iter()),
+                post_process: Box::new(vec![].into_iter()),
+                expr: Box::new(item0.into_iter()),
                 phantom: PhantomData
             },
             Expr{
-                statements: vec![],
-                post_process: vec![],
-                expr: item1,
+                statements: Box::new(vec![].into_iter()),
+                post_process: Box::new(vec![].into_iter()),
+                expr: Box::new(item1.into_iter()),
                 phantom: PhantomData
             }));
-        let mut statements = self.tuple.statements;
-        statements.append(&mut ret.statements);
-        ret.post_process.append(&mut self.tuple.post_process);
+
         Expr {
-            statements,
-            post_process: ret.post_process,
+            statements: Box::new(self.tuple.statements.chain(ret.statements)),
+            post_process: Box::new(ret.post_process.chain(self.tuple.post_process)),
             expr: ret.expr,
             phantom: PhantomData
         }
@@ -668,22 +647,22 @@ impl<T: Into<Expr<A, S>>, A: ExprObj, S: Stack> From<Option<T>> for Expr<Option<
     fn from(op: Option<T>) -> Self{
         match op {
             Some(t) => {
-                let mut a = t.into();
-                a.expr.insert(0, ExprTree::Str("some".to_string()));
+                let a = t.into();
+                let expr = vec![ExprTree::Str("some".to_string())].into_iter().chain(a.expr);
                 Expr{
                     statements: a.statements,
                     post_process: a.post_process,
-                    expr: a.expr,
+                    expr: Box::new(expr),
                     phantom: PhantomData
                 }
             },
             None => {
                 let expr = vec![ExprTree::Str("none".to_string())].into_iter()
-                    .chain([|| ExprTree::Num(0.0)].iter().cycle().take(A::size()).map(|f| f())).collect();
+                    .chain((0..A::size()).map(|_| ExprTree::Str("".to_string())));
                 Expr {
-                    statements: vec![],
-                    post_process: vec![],
-                    expr,
+                    statements:  Box::new(vec![].into_iter()),
+                    post_process:  Box::new(vec![].into_iter()),
+                    expr: Box::new(expr),
                     phantom: PhantomData
                 }
             }
@@ -691,22 +670,23 @@ impl<T: Into<Expr<A, S>>, A: ExprObj, S: Stack> From<Option<T>> for Expr<Option<
     }
 }
 impl<T: ExprObj, S: Stack> Expr<Option<T>, S> {
-    pub fn match_<T2: ExprObj>(mut self, some: impl FnOnce(Expr<T, S>) -> Expr<T2, S>, none: Expr<T2, S>) -> If<T2, S> {
-        let value = self.expr.split_off(1);
+    pub fn match_<T2: ExprObj>(self, some: impl FnOnce(Expr<T, S>) -> Expr<T2, S>, none: Expr<T2, S>) -> Expr<T2, S> {
+        let mut expr: Vec<_> = self.expr.collect();
+        let value = expr.split_off(1);
         let cond: Expr<bool, S> = Expr{
             statements: self.statements,
-            expr: vec![ExprTree::BinBoolOp{
-                left: self.expr.pop().unwrap().into(),
+            expr: Box::new(vec![ExprTree::BinBoolOp{
+                left: expr.pop().unwrap().into(),
                 op: "=",
                 right: ExprTree::Str("some".to_string()).into()
-            }],
+            }].into_iter()),
             post_process: self.post_process,
             phantom: PhantomData
         };
         let value: Expr<T, S> = Expr {
-            statements: vec![],
-            expr: value,
-            post_process: vec![],
+            statements: Box::new(vec![].into_iter()),
+            expr: Box::new(value.into_iter()),
+            post_process:  Box::new(vec![].into_iter()),
             phantom: PhantomData
         };
         Expr::if_(cond, some(value), none)
@@ -719,21 +699,25 @@ impl<T: Into<Expr<T2, S>>, E: Into<Expr<E2, S>>, T2: ExprObj, E2: ExprObj, S: St
         match result {
             Ok(t) => {
                 let t2 = t.into();
-                let zero = [|| ExprTree::Num(0.0)].iter().cycle().take(len - (1 + T2::size())).map(|f| f());
+                let expr = vec![ExprTree::Str("ok".to_string())].into_iter()
+                    .chain(t2.expr)
+                    .chain((0 .. len - (T2::size() + 1)).map(|_| ExprTree::Str("".to_string())));
                 Expr{
                     statements: t2.statements,
                     post_process: t2.post_process,
-                    expr: vec![ExprTree::Str("ok".to_string())].into_iter().chain(t2.expr).chain(zero).collect(),
+                    expr: Box::new(expr),
                     phantom: PhantomData
                 }
             },
             Err(e) => {
                 let e2 = e.into();
-                let zero = [|| ExprTree::Num(0.0)].iter().cycle().take(len - (1 + E2::size())).map(|f| f());
+                let expr = vec![ExprTree::Str("error".to_string())].into_iter()
+                    .chain(e2.expr)
+                    .chain((0 .. len - (E2::size() + 1)).map(|_| ExprTree::Str("".to_string())));
                 Expr{
                     statements: e2.statements,
                     post_process: e2.post_process,
-                    expr: vec![ExprTree::Str("err".to_string())].into_iter().chain(e2.expr).chain(zero).collect(),
+                    expr: Box::new(expr),
                     phantom: PhantomData
                 }
             }
@@ -742,30 +726,31 @@ impl<T: Into<Expr<T2, S>>, E: Into<Expr<E2, S>>, T2: ExprObj, E2: ExprObj, S: St
 }
 impl<T: ExprObj, E: ExprObj, S: Stack> Expr<Result<T, E>, S> {
     pub fn match_<T2: ExprObj>(
-        mut self,
+        self,
         ok: impl FnOnce(Expr<T, S>) -> Expr<T2, S>,
-        err: impl FnOnce(Expr<E, S>) -> Expr<T2, S>) -> If<T2, S> {
-        let value = self.expr.split_off(1);
+        err: impl FnOnce(Expr<E, S>) -> Expr<T2, S>) -> Expr<T2, S> {
+        let mut expr: Vec<_> = self.expr.collect();
+        let value = expr.split_off(1);
         let cond: Expr<bool, S> = Expr{
             statements: self.statements,
-            expr: vec![ExprTree::BinBoolOp{
-                left: self.expr.pop().unwrap().into(),
+            expr: Box::new(vec![ExprTree::BinBoolOp{
+                left: expr.pop().unwrap().into(),
                 op: "=",
                 right: ExprTree::Str("ok".to_string()).into()
-            }],
+            }].into_iter()),
             post_process: self.post_process,
             phantom: PhantomData
         };
         let ok_value: Expr<T, S> = Expr {
-            statements: vec![],
-            expr: value.clone().into_iter().take(T::size()).collect(),
-            post_process: vec![],
+            statements: Box::new(vec![].into_iter()),
+            expr: Box::new(value.clone().into_iter().take(T::size())),
+            post_process: Box::new(vec![].into_iter()),
             phantom: PhantomData
         };
         let err_value: Expr<E, S> = Expr {
-            statements: vec![],
-            expr: value.into_iter().take(E::size()).collect(),
-            post_process: vec![],
+            statements: Box::new(vec![].into_iter()),
+            expr: Box::new(value.into_iter().take(E::size())),
+            post_process: Box::new(vec![].into_iter()),
             phantom: PhantomData
         };
         Expr::if_(cond, ok(ok_value), err(err_value))
@@ -786,58 +771,54 @@ pub struct MutVariable<T: ExprObj, S: Stack>{
 impl<T: ExprObj, S: Stack> MutVariable<T, S> {
     pub fn get(&self) -> Expr<T, S>{
         let expr: Vec<_> = self.var_id.iter().map(|var_id|
-                    ExprTree::StackVar{
-                        stack: S::name(),
-                        var_id: var_id.clone()
-                    }
+                    ExprTree::StackVar{ stack: S::name(), var_id: var_id.clone() }
                 ).collect();
         Expr{
             statements: T::copy_action(&expr),
-            post_process: vec![],
-            expr,
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(expr.into_iter()),
             phantom: PhantomData
         }
     }
     pub fn rewrite(&self, expr: Expr<T, S>) -> Expr<(), S> {
+        let statements =
+            expr.expr.into_iter().zip(self.var_id.clone().into_iter()).map(|(expr, var_id)|
+                    ExprTree::StackVarRewrite{ expr: expr.into(), stack: S::name(), var_id }
+                )
+            .chain(expr.post_process.into_iter());
+
         Expr{
-            statements: expr.expr.into_iter().zip(self.var_id.clone().into_iter()).map(|(expr, var_id)|
-                ExprTree::StackVarRewrite{
-                    expr: expr.into(),
-                    stack: S::name(),
-                    var_id
-                }
-            ).chain(expr.post_process.into_iter()).collect(),
-            post_process: vec![],
-            expr: vec![],
+            statements: Box::new(statements),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![].into_iter()),
             phantom: PhantomData
         }
     }
 }
 impl<T: ExprObj, S: Stack> Mut<T, S> {
-    pub fn var<T2: ExprObj>(mut self, f: impl FnOnce(MutVariable<T, S>) -> Expr<T2, S>) -> Expr<T2, S> {
-        let expr_count = self.expr.expr.len();
-        let var_id: Vec<VarID> = (0..expr_count).map(|_| VarID::new()).collect();
-        let mut ret = f(MutVariable{phantom: PhantomData, var_id: var_id.clone()});
-        let mut statements = self.expr.statements;
-        for (expr, var_id) in self.expr.expr.into_iter().zip(var_id.clone()) {
-            statements.push(ExprTree::StackPush{
-                var_id,
-                stack: S::name(),
-                expr: expr.into()
-            });
-        }
-        statements.append(&mut self.expr.post_process);
-        statements.append(&mut ret.statements);
-        statements.append(&mut T::destructor(&*var_id.clone().into_iter().map(|var_id| ExprTree::StackVar{
-            var_id,
-            stack: S::name()
-        }).collect::<Vec<_>>()));
-        for var_id in var_id.into_iter().rev() {
-            ret.post_process.push(ExprTree::StackDelete{stack: S::name(), var_id});
-        }
+    pub fn var<T2: ExprObj>(self, f: impl FnOnce(MutVariable<T, S>) -> Expr<T2, S>) -> Expr<T2, S> {
+        let var_id: Vec<VarID> = (0..T::size()).map(|_| VarID::new()).collect();
+
+        let ret = f(MutVariable{phantom: PhantomData, var_id: var_id.clone()});
+
+        let statements = self.expr.statements
+            .chain(self.expr.expr.zip(var_id.clone()).map(|(expr, var_id)|
+                ExprTree::StackPush{var_id, stack: S::name(), expr: expr.into()}
+            ))
+            .chain(self.expr.post_process)
+            .chain(ret.statements)
+            .chain(T::destructor(&*var_id.clone().into_iter().map(|var_id|
+                    ExprTree::StackVar{ var_id, stack: S::name() }).collect::<Vec<_>>()
+                ));
+
+        let post_process = ret.post_process
+                .chain(var_id.into_iter().rev().map(|var_id|
+                        ExprTree::StackDelete{stack: S::name(), var_id}
+                    ));
+
         Expr {
-            statements,
-            post_process: ret.post_process,
+            statements: Box::new(statements),
+            post_process: Box::new(post_process),
             expr: ret.expr,
             phantom: PhantomData
         }
@@ -845,18 +826,16 @@ impl<T: ExprObj, S: Stack> Mut<T, S> {
 }
 
 impl<S: Stack> Expr<(), S> {
-    pub fn while_(mut cond: Expr<bool, S>, mut body: Expr<(), S>) -> Expr<(), S>{
-        let mut body_trees = body.statements;
-        body_trees.append(&mut body.post_process);
+    pub fn while_(mut cond: Expr<bool, S>, body: Expr<(), S>) -> Expr<(), S>{
         Expr {
-            statements: vec![ExprTree::While{
-                cond_statements: cond.statements,
-                cond_expr: cond.expr.pop().unwrap().into(),
-                cond_post_process: cond.post_process,
-                body: body_trees
-            }],
-            post_process: vec![],
-            expr: vec![],
+            statements: Box::new(vec![ExprTree::While{
+                cond_statements: cond.statements.collect(),
+                cond_expr: cond.expr.nth(0).unwrap().into(),
+                cond_post_process: cond.post_process.collect(),
+                body: body.statements.chain(body.post_process).collect()
+            }].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![].into_iter()),
             phantom: PhantomData
         }
     }
@@ -877,29 +856,29 @@ impl<T: ExprObj, H: HeapMemory<T>, S: Stack> Allocater<T, H, S> {
     }
     pub fn var<T2: ExprObj>(self, f: impl FnOnce(Expr<Mem<T, H>, S>) -> Expr<T2, S>) -> Expr<T2, S> {
         let var_id = VarID::new();
-        let mut statements = self.expr.statements;
-        statements.push(ExprTree::AllocateMemory{
-                main_mem: H::main_mem(),
-                unused_mem: H::unused_mem(),
-                expr: self.expr.expr,
-                var_id: var_id.clone(),
-                stack: S::name()
-            });
-        let mut post_process = self.expr.post_process;
         
-        let mut r = f(Expr {
-            statements: vec![],
-            expr: vec![ExprTree::StackVar{var_id, stack: S::name()}],
-            post_process: vec![],
+        let r = f(Expr {
+            statements: Box::new(vec![].into_iter()),
+            expr: Box::new(vec![ExprTree::StackVar{var_id: var_id.clone(), stack: S::name()}].into_iter()),
+            post_process: Box::new(vec![].into_iter()),
             phantom: PhantomData
         });
         
-        statements.append(&mut r.statements);
-        r.post_process.append(&mut post_process);
-        let post_process = r.post_process;
+        let statements = self.expr.statements
+            .chain(vec![ExprTree::AllocateMemory{
+                    main_mem: H::main_mem(),
+                    unused_mem: H::unused_mem(),
+                    expr: self.expr.expr.collect(),
+                    var_id,
+                    stack: S::name()
+                }])
+            .chain(r.statements);
+
+        let post_process = r.post_process.chain(self.expr.post_process);
+
         Expr{
-            statements,
-            post_process,
+            statements: Box::new(statements),
+            post_process: Box::new(post_process),
             expr: r.expr,
             phantom: PhantomData
         }
@@ -913,38 +892,46 @@ impl<T: ExprObj, H: HeapMemory<T>> ExprObj for Mem<T, H> {
     fn size() -> usize {
         1
     }
-    fn copy_action(expr: &[ExprTree]) -> Vec<ExprTree>{
-        vec![
-            ExprTree::CopyMemory{
-                pointer: expr[0].clone().into(),
-                main_mem: H::main_mem()
-            }
-        ]
+    fn copy_action(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(
+            vec![
+                ExprTree::CopyMemory{
+                    pointer: expr[0].clone().into(),
+                    main_mem: H::main_mem()
+                }
+            ].into_iter()
+        )
     }
-    fn destructor(expr: &[ExprTree]) -> Vec<ExprTree>{
-        vec![
-            ExprTree::FreeMemory{
-                pointer: expr[0].clone().into(),
-                main_mem: H::main_mem(),
-                unused_mem: H::unused_mem()
-            }
-        ]
+    fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        Box::new(
+            vec![
+                ExprTree::FreeMemory{
+                    pointer: expr[0].clone().into(),
+                    main_mem: H::main_mem(),
+                    unused_mem: H::unused_mem()
+                }
+            ].into_iter()
+        )
     }
 }
 
 impl <T: ExprObj, H: HeapMemory<T>, S: Stack> Expr<Mem<T, H>, S> {
     pub fn get(mut self) -> Expr<T, S> {
-        let pointer = self.expr.pop().unwrap();
-        let mut post_process = Mem::<T, H>::destructor(&[pointer.clone()]);
-        post_process.append(&mut self.post_process);
-        Expr {
-            statements: self.statements,
-            expr: (0..T::size()).map(|index| ExprTree::AccessMemory{
+        let pointer = self.expr.nth(0).unwrap();
+        
+        let post_process = Mem::<T, H>::destructor(&[pointer.clone()])
+            .chain(self.post_process);
+        
+        let expr = (0..T::size()).map(move |index| ExprTree::AccessMemory{
                 pointer: pointer.clone().into(),
                 index,
                 main_mem: H::main_mem()
-            }).collect(),
-            post_process,
+            });
+        
+        Expr {
+            statements: self.statements,
+            expr: Box::new(expr),
+            post_process: Box::new(post_process),
             phantom: PhantomData
         }
     }
@@ -958,15 +945,6 @@ macro_rules! action {
 }
 
 fn main(){
-    struct HM;
-    impl HeapMemory<(f64, (f64, f64))> for HM{
-        fn main_mem() -> Rc<str> {
-            Rc::from("heap")
-        }
-        fn unused_mem() -> Rc<str> {
-            Rc::from("unused")
-        }
-    }
     #[derive(Debug)]
     struct ST;
     impl Stack for ST{
@@ -975,11 +953,14 @@ fn main(){
         }
     }
     let expr: Expr<(), ST> = action!{
-        let! x = Allocater::alloc(HM, (1.0, (2.0, 3.0)).into());
-        let! y = Expr::from((x, 1.2));
-        let! z = y.get().item0().get();
+        let! x = Expr::from(-5.0);
+        
+        let! (x, y) = Expr::if_(x.get().less_than(Expr::from(0.0)),
+            Expr::from((-x.get(), -1.0)),
+            Expr::from((x.get(), 1.0))
+        ).tuple();
+        
         Expr::from(())
     };
-    println!("{:?}", expr);
     println!("{}", expr.create_tosh());
 }

@@ -149,29 +149,33 @@ impl ExprTree{
                     let cond = Self::create_tosh(vec![*cond].into_iter(), stacks);
                     let mut else_stacks = stacks.clone();
                     code.push(format!("if {} = \"true\" then", cond.join("")));
-                    code.append(&mut Self::create_tosh(then.into_iter(), stacks));
+                    for st in Self::create_tosh(then.into_iter(), stacks) {
+                        code.push(format!("  {}", st));
+                    }
                     code.push(format!("else"));
-                    code.append(&mut Self::create_tosh(else_.into_iter(), &mut else_stacks));
+                    for st in Self::create_tosh(else_.into_iter(), &mut else_stacks) {
+                        code.push(format!("  {}", st));
+                    }
                     code.push("end".into());
                 },
                 ExprTree::While{cond_statements, cond_post_process, cond_expr, body} => {
-                    let mut cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
+                    let cond_statements = Self::create_tosh(cond_statements.into_iter(), stacks);
                     let cond_expr = Self::create_tosh(vec![*cond_expr].into_iter(), stacks);
-                    let mut cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
-                    let mut body = Self::create_tosh(body.into_iter(), stacks);
+                    let cond_post_process = Self::create_tosh(cond_post_process.into_iter(), stacks);
+                    let body = Self::create_tosh(body.into_iter(), stacks);
                     code.append(&mut cond_statements.clone());
                     code.push(format!("repeat until {} = \"false\"", cond_expr.join("")));
-                    code.append(&mut cond_post_process);
-                    code.append(&mut body);
-                    code.append(&mut cond_statements);
+                    for st in cond_post_process.into_iter().chain(body).chain(cond_statements) {
+                        code.push(format!("  {}", st));
+                    }
                     code.push("end".into());
                 },
                 ExprTree::AllocateMemory{main_mem, unused_mem, stack: stack_name, expr, var_id} => {
                     code.push(format!("if (length of {}) = 0 then", &unused_mem));
                     let mut then_stacks = stacks.clone();
-                    code.push(format!("add 1 to {}", &main_mem));
+                    code.push(format!("  add 1 to {}", &main_mem));
                     {
-                        code.push(format!("insert (length of {}) at 1 of {}", &*main_mem, &*stack_name));
+                        code.push(format!("  insert (length of {}) at 1 of {}", &*main_mem, &*stack_name));
                         let stack = match then_stacks.get_mut(&stack_name) {
                             Some(stack) => stack,
                             None => {
@@ -182,13 +186,13 @@ impl ExprTree{
                         stack.push(var_id.clone());
                     }
                     for expr_tree in expr.clone() {
-                        code.push(format!("add {} to {}",
+                        code.push(format!("  add {} to {}",
                             Self::create_tosh(vec![expr_tree].into_iter(), &mut then_stacks).join(""),
                             &main_mem));
                     }
                     code.push("else".into());
                     {
-                        code.push(format!("insert (item 1 of {}) at 1 of {}", &*unused_mem, &*stack_name));
+                        code.push(format!("  insert (item 1 of {}) at 1 of {}", &*unused_mem, &*stack_name));
                         let stack = match stacks.get_mut(&stack_name) {
                             Some(stack) => stack,
                             None => {
@@ -198,14 +202,17 @@ impl ExprTree{
                         };
                         stack.push(var_id);
                     }
+                    code.push(format!("  replace item (item 1 of {}) of {} with 1",
+                        &unused_mem,
+                        &main_mem));
                     for (index, expr_tree) in expr.into_iter().enumerate() {
-                        code.push(format!("replace item ((item 1 of {}) + {}) of {} with {}",
+                        code.push(format!("  replace item ((item 1 of {}) + {}) of {} with {}",
                             &unused_mem,
-                            index,
+                            index + 1,
                             &main_mem,
                             Self::create_tosh(vec![expr_tree].into_iter(), stacks).join("")));
                     }
-                    code.push(format!("delete 1 of {}", &unused_mem));
+                    code.push(format!("  delete 1 of {}", &unused_mem));
                     code.push("end".into());
                 },
                 ExprTree::FreeMemory{pointer, main_mem, unused_mem} => {
@@ -215,7 +222,7 @@ impl ExprTree{
                         &main_mem
                     ));
                     code.push(format!("if (item {} of {}) = 0 then", &pointer, &main_mem));
-                    code.push(format!("insert {} at 1 of {}", pointer, unused_mem));
+                    code.push(format!("  insert {} at 1 of {}", pointer, unused_mem));
                     code.push("end".into());
                 },
                 ExprTree::CopyMemory{pointer, main_mem} => {
@@ -846,47 +853,29 @@ pub trait HeapMemory<T: ExprObj>{
     fn unused_mem() -> Rc<str>;
 }
 
-pub struct Allocater<T: ExprObj, H: HeapMemory<T>, S: Stack> {
-    expr: Expr<T, S>,
-    phantom: PhantomData<Box<H>>
+pub struct Mem<T: ExprObj, H: HeapMemory<T>> {
+    phantom: PhantomData<(T, Box<H>)>
 }
-impl<T: ExprObj, H: HeapMemory<T>, S: Stack> Allocater<T, H, S> {
-    pub fn alloc(_: H, expr: Expr<T, S>) -> Self {
-        Allocater{expr, phantom: PhantomData}
-    }
-    pub fn var<T2: ExprObj>(self, f: impl FnOnce(Expr<Mem<T, H>, S>) -> Expr<T2, S>) -> Expr<T2, S> {
+impl<T: ExprObj, H: HeapMemory<T>> Mem<T, H> {
+    pub fn alloc<S: Stack>(_: H, expr: Expr<T, S>) -> Expr<Self, S> {
         let var_id = VarID::new();
         
-        let r = f(Expr {
-            statements: Box::new(vec![].into_iter()),
-            expr: Box::new(vec![ExprTree::StackVar{var_id: var_id.clone(), stack: S::name()}].into_iter()),
-            post_process: Box::new(vec![].into_iter()),
-            phantom: PhantomData
-        });
-        
-        let statements = self.expr.statements
+        let statements = expr.statements
             .chain(vec![ExprTree::AllocateMemory{
                     main_mem: H::main_mem(),
                     unused_mem: H::unused_mem(),
-                    expr: self.expr.expr.collect(),
-                    var_id,
+                    expr: expr.expr.collect(),
+                    var_id: var_id.clone(),
                     stack: S::name()
-                }])
-            .chain(r.statements);
-
-        let post_process = r.post_process.chain(self.expr.post_process);
-
-        Expr{
+                }]);
+        
+        Expr {
             statements: Box::new(statements),
-            post_process: Box::new(post_process),
-            expr: r.expr,
+            expr: Box::new(vec![ExprTree::StackVar{var_id, stack: S::name()}].into_iter()),
+            post_process: expr.post_process,
             phantom: PhantomData
         }
     }
-}
-
-pub struct Mem<T: ExprObj, H: HeapMemory<T>> {
-    phantom: PhantomData<(T, Box<H>)>
 }
 impl<T: ExprObj, H: HeapMemory<T>> ExprObj for Mem<T, H> {
     fn size() -> usize {
@@ -945,7 +934,16 @@ macro_rules! action {
 }
 
 fn main(){
-    #[derive(Debug)]
+    struct HM;
+    impl HeapMemory<Option<(f64, f64)>> for HM {
+        fn main_mem() -> Rc<str> {
+            Rc::from("heap")
+        }
+        fn unused_mem() -> Rc<str>{
+            Rc::from("unused")
+        }
+    }
+    
     struct ST;
     impl Stack for ST{
         fn name() -> Rc<str> {
@@ -953,12 +951,9 @@ fn main(){
         }
     }
     let expr: Expr<(), ST> = action!{
-        let! x = Expr::from(-5.0);
-        
-        let! (x, y) = Expr::if_(x.get().less_than(Expr::from(0.0)),
-            Expr::from((-x.get(), -1.0)),
-            Expr::from((x.get(), 1.0))
-        ).tuple();
+        let! x = Mem::alloc(HM, Expr::from(None::<(f64, f64)>));
+        let! y = Mem::alloc(HM, Expr::from(Some((10.0, 1.5))));
+        let! z = Mem::alloc(HM, Expr::from(Some((5.0, 3.2))));
         
         Expr::from(())
     };

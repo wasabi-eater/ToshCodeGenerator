@@ -77,7 +77,8 @@ pub enum ExprTree{
     FreeMemory {
         pointer: Box<ExprTree>,
         main_mem: Rc<str>,
-        unused_mem: Rc<str>
+        unused_mem: Rc<str>,
+        when_free: Vec<ExprTree>
     },
     CopyMemory {
         pointer: Box<ExprTree>,
@@ -215,7 +216,7 @@ impl ExprTree{
                     code.push(format!("  delete 1 of {}", &unused_mem));
                     code.push("end".into());
                 },
-                ExprTree::FreeMemory{pointer, main_mem, unused_mem} => {
+                ExprTree::FreeMemory{pointer, main_mem, unused_mem, when_free} => {
                     let pointer = Self::create_tosh(vec![*pointer].into_iter(), stacks).join("");
                     code.push(format!("replace item {0} of {1} with ((item {0} of {1}) - 1)",
                         &pointer,
@@ -223,6 +224,9 @@ impl ExprTree{
                     ));
                     code.push(format!("if (item {} of {}) = 0 then", &pointer, &main_mem));
                     code.push(format!("  insert {} at 1 of {}", pointer, unused_mem));
+                    for st in Self::create_tosh(when_free.into_iter(), stacks) {
+                        code.push(format!("  {}", st));
+                    }
                     code.push("end".into());
                 },
                 ExprTree::CopyMemory{pointer, main_mem} => {
@@ -892,12 +896,20 @@ impl<T: ExprObj, H: HeapMemory<T>> ExprObj for Mem<T, H> {
         )
     }
     fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        let pointer = &expr[0];
         Box::new(
             vec![
                 ExprTree::FreeMemory{
-                    pointer: expr[0].clone().into(),
+                    pointer: pointer.clone().into(),
                     main_mem: H::main_mem(),
-                    unused_mem: H::unused_mem()
+                    unused_mem: H::unused_mem(),
+                    when_free: T::destructor(&*(0..T::size()).map(|index|
+                            ExprTree::AccessMemory{
+                                pointer: pointer.clone().into(),
+                                main_mem: H::main_mem(),
+                                index
+                            }
+                        ).collect::<Vec<_>>()).collect()
                 }
             ].into_iter()
         )
@@ -926,6 +938,40 @@ impl <T: ExprObj, H: HeapMemory<T>, S: Stack> Expr<Mem<T, H>, S> {
     }
 }
 
+pub trait TypeDef {
+    type From: ExprObj;
+}
+impl <T: TypeDef> ExprObj for T {
+    fn size() -> usize{
+        T::From::size()
+    }
+    fn copy_action(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>>{
+        T::From::copy_action(expr)
+    }
+    fn destructor(expr: &[ExprTree]) -> Box<dyn Iterator<Item = ExprTree>> {
+        T::From::destructor(expr)
+    }
+}
+impl <T: TypeDef, S: Stack> Expr<T, S> {
+    pub fn new(expr: impl Into<Expr<T::From, S>>) -> Expr<T, S> {
+        let expr = expr.into();
+        Expr{
+            statements: expr.statements,
+            expr: expr.expr,
+            post_process: expr.post_process,
+            phantom: PhantomData
+        }
+    }
+    pub fn value(self) -> Expr<T::From, S> {
+        Expr {
+            statements: self.statements,
+            expr: self.expr,
+            post_process: self.post_process,
+            phantom: PhantomData
+        }
+    }
+}
+
 macro_rules! action {
     {let! $v:pat = $e:expr; $(let! $v2:pat = $e2:expr;)* $e3:expr} => {
         $e.var(|$v| action!{$(let! $v2 = $e2;)* $e3})
@@ -934,8 +980,15 @@ macro_rules! action {
 }
 
 fn main(){
+    struct List<T: ExprObj, H: HeapMemory<Self>> {
+        phantom: PhantomData<(T, H)>
+    }
+    impl<T: ExprObj, H: HeapMemory<Self>> TypeDef for List<T, H>{
+        type From = Option<(T, Mem<Self, H>)>;
+    }
+
     struct HM;
-    impl HeapMemory<Option<(f64, f64)>> for HM {
+    impl HeapMemory<List<f64, HM>> for HM {
         fn main_mem() -> Rc<str> {
             Rc::from("heap")
         }
@@ -950,10 +1003,16 @@ fn main(){
             Rc::from("stack")
         }
     }
+    
+    fn nil() -> Expr<List<f64, HM>, ST> {
+        Expr::new(None::<Expr<(f64, Mem<List<f64, HM>, HM>), ST>>)
+    }
+    fn cons(x: f64, list: Expr<List<f64, HM>, ST>) -> Expr<List<f64, HM>, ST> {
+        Expr::new(Some((x, Mem::alloc(HM, list))))
+    }
+    
     let expr: Expr<(), ST> = action!{
-        let! x = Mem::alloc(HM, Expr::from(None::<(f64, f64)>));
-        let! y = Mem::alloc(HM, Expr::from(Some((10.0, 1.5))));
-        let! z = Mem::alloc(HM, Expr::from(Some((5.0, 3.2))));
+        let! list = cons(0.5, cons(1.2, cons(3.4, nil())));
         
         Expr::from(())
     };
